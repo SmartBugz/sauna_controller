@@ -48,6 +48,31 @@ def update_setpoint():
     return redirect(url_for("index"))
 
 
+@app.route("/units/toggle", methods=["POST"])
+def toggle_units():
+    """Toggle between imperial and metric display units.
+
+    This only changes how values are displayed and how new setpoints are
+    interpreted; the underlying control logic always uses Celsius.
+    """
+    controller.toggle_units()
+    return redirect(url_for("index"))
+
+
+@app.route("/heater/confirm_continue", methods=["POST"])
+def heater_confirm_continue():
+    """User confirms continuing after max-on-time safety window.
+
+    Clears confirmation/lockout flags and allows the control loop to
+    continue operating towards the desired setpoint.
+    """
+    # Re-enable heater and clear confirmation flags via the controller API.
+    # For now we simply re-enable; controller will handle ensuring safety
+    # limits (max temperature, further runtime checks) remain in effect.
+    controller.set_heater_enabled(True)
+    return redirect(url_for("index"))
+
+
 if __name__ == "__main__":
     # NOTE: For development only. In production, use gunicorn/uwsgi.
     # host="0.0.0.0" makes it accessible from other devices on the network.

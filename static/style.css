@@ -108,10 +108,34 @@ p {
     background: #b91c1c;
 }
 
+.btn-secondary {
+    background: #4b5563;
+}
+
+.btn-secondary:hover {
+    background: #374151;
+}
+
 footer {
     text-align: center;
     font-size: 0.8rem;
     color: rgba(255, 255, 255, 0.6);
+}
+
+.warning {
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    background: rgba(220, 38, 38, 0.15);
+    border: 1px solid rgba(220, 38, 38, 0.6);
+}
+
+.confirmation {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 4px;
+    background: rgba(37, 99, 235, 0.15);
+    border: 1px solid rgba(37, 99, 235, 0.6);
 }
 
 @media (min-width: 768px) {

@@ -12,8 +12,15 @@
 
         <section class="status">
             <h2>Status</h2>
-            <p><strong>Current Temperature:</strong> {{ state.current_temp }} &deg;C</p>
-            <p><strong>Desired Setpoint:</strong> {{ state.desired_temp }} &deg;C</p>
+            <p><strong>Units:</strong>
+                {{ 'Fahrenheit' if state.use_imperial else 'Celsius' }}
+                (<span>{{ state.unit }}</span>)
+            </p>
+            <p><strong>Max Allowed Temperature:</strong>
+                195 &deg;F (90 &deg;C)
+            </p>
+            <p><strong>Current Temperature:</strong> {{ state.current_temp }} &deg;{{ state.unit }}</p>
+            <p><strong>Desired Setpoint:</strong> {{ state.desired_temp }} &deg;{{ state.unit }}</p>
             <p><strong>Heater Enabled:</strong>
                 <span class="badge {{ 'on' if state.heater_enabled else 'off' }}">
                     {{ 'YES' if state.heater_enabled else 'NO' }}
@@ -24,6 +31,17 @@
                     {{ 'ON' if state.heater_on else 'OFF' }}
                 </span>
             </p>
+            {% if state.lockout_active %}
+            <p class="warning"><strong>Safety Lockout:</strong>
+                {% if state.lockout_reason == 'max_temp' %}
+                    Temperature safety limit reached. Heater has been shut off.
+                {% elif state.lockout_reason == 'max_on_time' %}
+                    Maximum continuous run time reached. Heater has been shut off.
+                {% else %}
+                    Safety lockout is active.
+                {% endif %}
+            </p>
+            {% endif %}
             <p><strong>Heater ON Duration:</strong>
                 {{ state.heater_on_for if state.heater_on_for else 'N/A' }}
             </p>
@@ -36,7 +54,9 @@
             <h2>Controls</h2>
 
             <form method="post" action="{{ url_for('heater_on') }}">
-                <button type="submit" class="btn btn-on">Turn Heater ON</button>
+                <button type="submit" class="btn btn-on" {% if state.lockout_active %}disabled{% endif %}>
+                    Turn Heater ON
+                </button>
             </form>
 
             <form method="post" action="{{ url_for('heater_off') }}">
@@ -44,7 +64,7 @@
             </form>
 
             <form method="post" action="{{ url_for('update_setpoint') }}" class="setpoint-form">
-                <label for="desired_temp">Desired Temperature (&deg;C):</label>
+                <label for="desired_temp">Desired Temperature (&deg;{{ state.unit }}):</label>
                 <input
                     type="number"
                     step="0.5"
@@ -54,6 +74,26 @@
                     required
                 />
                 <button type="submit" class="btn">Save New Setpoint</button>
+            </form>
+
+            {% if state.confirmation_required %}
+            <div class="confirmation">
+                <p>
+                    Maximum continuous run time reached.
+                    Confirm within
+                    {{ state.confirmation_remaining if state.confirmation_remaining is not none else 0 }}
+                    seconds to continue, otherwise the heater will shut off.
+                </p>
+                <form method="post" action="{{ url_for('heater_confirm_continue') }}">
+                    <button type="submit" class="btn btn-on">Continue Heating</button>
+                </form>
+            </div>
+            {% endif %}
+
+            <form method="post" action="{{ url_for('toggle_units') }}">
+                <button type="submit" class="btn btn-secondary">
+                    Switch to {{ 'Metric (°C)' if state.use_imperial else 'Imperial (°F)' }}
+                </button>
             </form>
         </section>
 

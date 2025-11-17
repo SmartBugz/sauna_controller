@@ -1,0 +1,5 @@
+{
+  "desired_temp": 90.0,
+  "heater_enabled": true,
+  "use_imperial": true
+}

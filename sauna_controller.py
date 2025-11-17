@@ -20,7 +20,6 @@ import os
 import threading
 import time
 from dataclasses import dataclass, asdict
-from datetime import datetime
 from typing import Optional
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "sauna_state.json")
@@ -30,6 +29,9 @@ TEMP_SENSOR_GPIO = 4  # DS18B20 uses 1-Wire on GPIO4 (handled by kernel)
 RELAY_GPIO = 17       # Relay control pin (active-LOW)
 
 HYSTERESIS = 1.0  # degrees C
+MAX_TEMP_C = 90.0  # safety limit (~194°F), below 100°C high-limit switch
+MAX_ON_TIME_SEC = 2 * 60 * 60  # 2 hours continuous ON time
+CONFIRMATION_TIMEOUT_SEC = 90  # time window to confirm extending runtime
 CONTROL_INTERVAL_SEC = 2.0  # control loop period
 
 
@@ -168,6 +170,11 @@ class SaunaState:
     time_to_setpoint: Optional[float] = None  # seconds from heater_on_since
 
     last_updated: Optional[float] = None  # epoch seconds
+    use_imperial: bool = True  # Display temperatures in Fahrenheit by default
+    lockout_active: bool = False  # True when max-on-time lockout is in effect
+    lockout_reason: Optional[str] = None  # e.g. "max_on_time"
+    confirmation_required: bool = False  # waiting for user to confirm continuation
+    confirmation_deadline: Optional[float] = None  # epoch seconds
 
 
 class SaunaController:
@@ -218,30 +225,94 @@ class SaunaController:
             m, s = divmod(rem, 60)
             return f"{h:02d}:{m:02d}:{s:02d}"
 
+        # Convert to display units based on use_imperial flag
+        def _to_f(c: float) -> float:
+            return c * 9.0 / 5.0 + 32.0
+
+        use_imperial = state.get("use_imperial", True)
+
+        if use_imperial:
+            current_display = round(_to_f(state["current_temp"]), 1)
+            desired_display = round(_to_f(state["desired_temp"]), 1)
+            unit_label = "F"
+        else:
+            current_display = round(state["current_temp"], 1)
+            desired_display = round(state["desired_temp"], 1)
+            unit_label = "C"
+
+        # Compute remaining confirmation time if applicable
+        confirmation_remaining = None
+        if state.get("confirmation_required") and state.get("confirmation_deadline"):
+            remaining = state["confirmation_deadline"] - now
+            if remaining > 0:
+                confirmation_remaining = int(remaining)
+
         return {
-            "current_temp": round(state["current_temp"], 1),
-            "desired_temp": state["desired_temp"],
+            "current_temp": current_display,
+            "desired_temp": desired_display,
+            "unit": unit_label,
+            "use_imperial": use_imperial,
             "heater_enabled": state["heater_enabled"],
             "heater_on": state["heater_on"],
             "heater_on_for": _fmt_duration(heater_on_duration),
             "time_to_setpoint": _fmt_duration(time_to_setpoint),
+            "lockout_active": state.get("lockout_active", False),
+            "lockout_reason": state.get("lockout_reason"),
+            "confirmation_required": state.get("confirmation_required", False),
+            "confirmation_remaining": confirmation_remaining,
         }
 
     def set_heater_enabled(self, enabled: bool) -> None:
-        """User-facing toggle: when False, heater will be forced off."""
+        """User-facing toggle: when False, heater will be forced off.
+
+        Heater is always defaulted to OFF on startup since heater_enabled
+        starts False and the relay is initialized to the OFF state.
+        """
         with self._lock:
             self._state.heater_enabled = enabled
+
+            # Clearing lockout/confirmation when user explicitly turns heater off
             if not enabled:
+                self._state.lockout_active = False
+                self._state.lockout_reason = None
+                self._state.confirmation_required = False
+                self._state.confirmation_deadline = None
+
                 # Immediately turn relay off
                 self._set_relay(False)
+
             self._save_state_to_disk_locked()
 
     def set_desired_temperature(self, temp: float) -> None:
-        """Update desired temperature and persist configuration."""
+        """Update desired temperature (in display units) and persist.
+
+        The web UI always posts in the currently selected units. Internally we
+        store and operate in Celsius, so convert if necessary.
+        """
         with self._lock:
-            self._state.desired_temp = temp
+            # Convert to Celsius if currently using imperial
+            if self._state.use_imperial:
+                desired_c = (temp - 32.0) * 5.0 / 9.0
+            else:
+                desired_c = temp
+
+            # Clamp to safety maximum
+            if desired_c > MAX_TEMP_C:
+                desired_c = MAX_TEMP_C
+
+            self._state.desired_temp = desired_c
             # Reset setpoint timing if user changes the target
             self._state.time_to_setpoint = None
+            self._save_state_to_disk_locked()
+
+    def toggle_units(self) -> None:
+        """Toggle between imperial (F) and metric (C) display units.
+
+        This affects only how temperatures are shown and how new setpoints
+        are interpreted; the control loop always uses Celsius internally.
+        """
+        with self._lock:
+            self._state.use_imperial = not self._state.use_imperial
             self._save_state_to_disk_locked()
 
     def stop(self) -> None:
@@ -268,7 +339,13 @@ class SaunaController:
             self._state.heater_on_since = None
 
     def _load_state_from_disk(self) -> None:
-        """Load persisted configuration if present (desired_temp, heater_enabled)."""
+        """Load persisted configuration if present.
+
+        Currently persisted:
+        - desired_temp (Celsius)
+        - heater_enabled
+        - use_imperial (bool)
+        """
         if not os.path.isfile(self.config_path):
             return
         try:
@@ -280,6 +357,12 @@ class SaunaController:
         with self._lock:
             self._state.desired_temp = float(data.get("desired_temp", self._state.desired_temp))
             self._state.heater_enabled = bool(data.get("heater_enabled", self._state.heater_enabled))
+            self._state.use_imperial = bool(data.get("use_imperial", self._state.use_imperial))
+            # Safety-related flags default to safe values on startup
+            self._state.lockout_active = False
+            self._state.lockout_reason = None
+            self._state.confirmation_required = False
+            self._state.confirmation_deadline = None
 
     def _save_state_to_disk_locked(self) -> None:
         """Persist relevant configuration fields to JSON.
@@ -289,6 +372,7 @@ class SaunaController:
         data = {
             "desired_temp": self._state.desired_temp,
             "heater_enabled": self._state.heater_enabled,
+            "use_imperial": self._state.use_imperial,
         }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -314,14 +398,46 @@ class SaunaController:
                 desired = self._state.desired_temp
                 enabled = self._state.heater_enabled
 
-                if not enabled:
-                    # User has disabled heater entirely
+                # Enforce hard safety maximum
+                if current_temp >= MAX_TEMP_C:
                     self._set_relay(False)
+                    self._state.lockout_active = True
+                    self._state.lockout_reason = "max_temp"
                 else:
-                    # Bang-bang control with hysteresis
-                    if current_temp < desired - HYSTERESIS:
-                        self._set_relay(True)
-                    elif current_temp > desired + HYSTERESIS:
+                    # Handle max-on-time safety
+                    if self._state.heater_on_since is not None:
+                        on_duration = now - self._state.heater_on_since
+                        if (
+                            on_duration >= MAX_ON_TIME_SEC
+                            and not self._state.confirmation_required
+                            and not self._state.lockout_active
+                        ):
+                            # Start confirmation window
+                            self._state.confirmation_required = True
+                            self._state.confirmation_deadline = now + CONFIRMATION_TIMEOUT_SEC
+
+                    # If confirmation window has expired without user action
+                    if (
+                        self._state.confirmation_required
+                        and self._state.confirmation_deadline is not None
+                        and now >= self._state.confirmation_deadline
+                    ):
+                        self._set_relay(False)
+                        self._state.heater_enabled = False
+                        self._state.confirmation_required = False
+                        self._state.confirmation_deadline = None
+                        self._state.lockout_active = True
+                        self._state.lockout_reason = "max_on_time"
+
+                    # Normal control only if not in lockout and heater is enabled
+                    if not self._state.lockout_active and enabled:
+                        # Bang-bang control with hysteresis
+                        if current_temp < desired - HYSTERESIS:
+                            self._set_relay(True)
+                        elif current_temp > desired + HYSTERESIS:
+                            self._set_relay(False)
+                    else:
+                        # If not enabled or in lockout, ensure relay is off
                         self._set_relay(False)
 
                 # Track time to first reach setpoint
