@@ -1,0 +1,4 @@
+Flask>=3.0,<4.0
+# RPi.GPIO is only installable on Raspberry Pi; install there manually if needed.
+# For development on non-Pi systems, the code falls back to a mock GPIO.
+RPi.GPIO; platform_system == "Linux"

@@ -1,0 +1,121 @@
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #0b1726;
+    color: #f5f5f5;
+}
+
+.container {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 1.5rem;
+}
+
+h1 {
+    text-align: center;
+    margin-bottom: 1.5rem;
+}
+
+section {
+    background: #111c2b;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+}
+
+h2 {
+    margin-top: 0;
+    font-size: 1.2rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding-bottom: 0.5rem;
+}
+
+p {
+    margin: 0.35rem 0;
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+}
+
+.badge.on {
+    background: #18a34a;
+}
+
+.badge.off {
+    background: #b91c1c;
+}
+
+.controls form {
+    margin: 0.5rem 0;
+}
+
+.setpoint-form {
+    display: flex;
+    flex-direction: column;
+}
+
+.setpoint-form label {
+    margin-bottom: 0.25rem;
+}
+
+.setpoint-form input[type="number"] {
+    padding: 0.4rem 0.5rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    margin-bottom: 0.5rem;
+    background: #0b1726;
+    color: #f5f5f5;
+}
+
+.btn {
+    appearance: none;
+    border: none;
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    font-size: 1rem;
+    cursor: pointer;
+    background: #2563eb;
+    color: #f5f5f5;
+    transition: background 0.15s ease, transform 0.05s ease;
+}
+
+.btn:hover {
+    background: #1d4ed8;
+}
+
+.btn:active {
+    transform: scale(0.98);
+}
+
+.btn-on {
+    background: #16a34a;
+}
+
+.btn-on:hover {
+    background: #15803d;
+}
+
+.btn-off {
+    background: #dc2626;
+}
+
+.btn-off:hover {
+    background: #b91c1c;
+}
+
+footer {
+    text-align: center;
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+@media (min-width: 768px) {
+    .container {
+        max-width: 720px;
+    }
+}

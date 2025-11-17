@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Sauna Controller</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+    <div class="container">
+        <h1>Smart Sauna Controller</h1>
+
+        <section class="status">
+            <h2>Status</h2>
+            <p><strong>Current Temperature:</strong> {{ state.current_temp }} &deg;C</p>
+            <p><strong>Desired Setpoint:</strong> {{ state.desired_temp }} &deg;C</p>
+            <p><strong>Heater Enabled:</strong>
+                <span class="badge {{ 'on' if state.heater_enabled else 'off' }}">
+                    {{ 'YES' if state.heater_enabled else 'NO' }}
+                </span>
+            </p>
+            <p><strong>Heater Relay State:</strong>
+                <span class="badge {{ 'on' if state.heater_on else 'off' }}">
+                    {{ 'ON' if state.heater_on else 'OFF' }}
+                </span>
+            </p>
+            <p><strong>Heater ON Duration:</strong>
+                {{ state.heater_on_for if state.heater_on_for else 'N/A' }}
+            </p>
+            <p><strong>Time to Reach Setpoint:</strong>
+                {{ state.time_to_setpoint if state.time_to_setpoint else 'N/A' }}
+            </p>
+        </section>
+
+        <section class="controls">
+            <h2>Controls</h2>
+
+            <form method="post" action="{{ url_for('heater_on') }}">
+                <button type="submit" class="btn btn-on">Turn Heater ON</button>
+            </form>
+
+            <form method="post" action="{{ url_for('heater_off') }}">
+                <button type="submit" class="btn btn-off">Turn Heater OFF</button>
+            </form>
+
+            <form method="post" action="{{ url_for('update_setpoint') }}" class="setpoint-form">
+                <label for="desired_temp">Desired Temperature (&deg;C):</label>
+                <input
+                    type="number"
+                    step="0.5"
+                    id="desired_temp"
+                    name="desired_temp"
+                    value="{{ state.desired_temp }}"
+                    required
+                />
+                <button type="submit" class="btn">Save New Setpoint</button>
+            </form>
+        </section>
+
+        <footer>
+            <p>Access this page from your phone or via the local touchscreen.</p>
+        </footer>
+    </div>
+</body>
+</html>
