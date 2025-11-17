@@ -1,0 +1,17 @@
+{
+  // Debug configurations for Smart Sauna Controller
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Sauna Flask App",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "env": {
+        "FLASK_ENV": "development"
+      },
+      "justMyCode": true
+    }
+  ]
+}

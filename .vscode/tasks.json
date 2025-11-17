@@ -1,0 +1,34 @@
+{
+  // Tasks to simplify running the Smart Sauna Controller during development
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Sauna Flask App",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-Command",
+        "cd \"${workspaceFolder}\"; if (-Not (Test-Path .venv)) { python -m venv .venv }; .venv\\Scripts\\Activate.ps1; pip install -r requirements.txt; python .\\main.py"
+      ],
+      "group": "none",
+      "isBackground": false,
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Sauna Import Test",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-Command",
+        "cd \"${workspaceFolder}\"; if (-Not (Test-Path .venv)) { python -m venv .venv }; .venv\\Scripts\\Activate.ps1; pip install -r requirements.txt; python -c \"import main, sauna_controller; print('IMPORT_OK')\""
+      ],
+      "group": "test",
+      "isBackground": false,
+      "problemMatcher": []
+    }
+  ]
+}
