@@ -1,5 +1,9 @@
 {
   "desired_temp": 90.0,
   "heater_enabled": true,
-  "use_imperial": true
+  "use_imperial": true,
+  "scheduled_start_at": null,
+  "avg_heatup_rate_c_per_sec": null,
+  "price_per_kwh": null,
+  "heater_power_kw": null
 }

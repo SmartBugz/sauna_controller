@@ -73,6 +73,57 @@ def heater_confirm_continue():
     return redirect(url_for("index"))
 
 
+@app.route("/schedule", methods=["POST"])
+def set_schedule():
+    """Set or clear a simple one-shot schedule.
+
+    Expects an ISO datetime-local string in the form field "schedule_time".
+    For now we trust the client's clock; in a real system we'd handle
+    time zones explicitly. We enforce a maximum horizon of 48 hours.
+    """
+    value = request.form.get("schedule_time")
+    if not value:
+        controller.set_schedule(None)
+        return redirect(url_for("index"))
+
+    try:
+        # datetime-local comes as 'YYYY-MM-DDTHH:MM'
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(value)
+        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+        delta = dt - now
+        max_horizon_sec = 48 * 3600
+        if delta.total_seconds() <= 0 or delta.total_seconds() > max_horizon_sec:
+            # Out of allowed window; clear schedule
+            controller.set_schedule(None)
+        else:
+            controller.set_schedule(now.timestamp() + delta.total_seconds())
+    except Exception:
+        # On parse error, just clear schedule
+        controller.set_schedule(None)
+
+    return redirect(url_for("index"))
+
+
+@app.route("/cost_config", methods=["POST"])
+def cost_config():
+    """Update electricity cost and heater power configuration."""
+    def _parse_float(name: str):
+        raw = request.form.get(name)
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    price = _parse_float("price_per_kwh")
+    power = _parse_float("heater_power_kw")
+    controller.set_cost_config(price, power)
+    return redirect(url_for("index"))
+
+
 if __name__ == "__main__":
     # NOTE: For development only. In production, use gunicorn/uwsgi.
     # host="0.0.0.0" makes it accessible from other devices on the network.

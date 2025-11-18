@@ -176,6 +176,15 @@ class SaunaState:
     confirmation_required: bool = False  # waiting for user to confirm continuation
     confirmation_deadline: Optional[float] = None  # epoch seconds
 
+    # Simple one-shot schedule: UTC timestamp (epoch seconds) when we want sauna hot
+    scheduled_start_at: Optional[float] = None
+    # Measured average heat-up rate in deg C per second (for scheduling)
+    avg_heatup_rate_c_per_sec: Optional[float] = None
+
+    # Simple energy/cost tracking configuration
+    price_per_kwh: Optional[float] = None  # in user currency
+    heater_power_kw: Optional[float] = None  # e.g. 6.0 for 6 kW heater
+
 
 class SaunaController:
     """Manages background reading and heater control in its own thread."""
@@ -247,7 +256,7 @@ class SaunaController:
             if remaining > 0:
                 confirmation_remaining = int(remaining)
 
-        return {
+        snapshot = {
             "current_temp": current_display,
             "desired_temp": desired_display,
             "unit": unit_label,
@@ -260,7 +269,20 @@ class SaunaController:
             "lockout_reason": state.get("lockout_reason"),
             "confirmation_required": state.get("confirmation_required", False),
             "confirmation_remaining": confirmation_remaining,
+            "scheduled_start_at": state.get("scheduled_start_at"),
+            "avg_heatup_rate_c_per_sec": state.get("avg_heatup_rate_c_per_sec"),
+            "price_per_kwh": state.get("price_per_kwh"),
+            "heater_power_kw": state.get("heater_power_kw"),
         }
+
+        # Derived cost estimate for current ON duration
+        price = state.get("price_per_kwh")
+        power_kw = state.get("heater_power_kw")
+        if price is not None and power_kw is not None and heater_on_duration is not None:
+            hours = heater_on_duration / 3600.0
+            snapshot["estimated_cost_current_session"] = round(power_kw * hours * price, 2)
+
+        return snapshot
 
     def set_heater_enabled(self, enabled: bool) -> None:
         """User-facing toggle: when False, heater will be forced off.
@@ -315,6 +337,27 @@ class SaunaController:
             self._state.use_imperial = not self._state.use_imperial
             self._save_state_to_disk_locked()
 
+    # --- Scheduling and cost configuration API -----------------------------
+
+    def set_schedule(self, scheduled_epoch: Optional[float]) -> None:
+        """Set or clear a simple one-shot schedule.
+
+        The timestamp is the time at which the user wants the sauna hot. The
+        control loop will start heating early based on the measured
+        avg_heatup_rate_c_per_sec so that the sauna is near the desired
+        setpoint at that time.
+        """
+        with self._lock:
+            self._state.scheduled_start_at = scheduled_epoch
+            self._save_state_to_disk_locked()
+
+    def set_cost_config(self, price_per_kwh: Optional[float], heater_power_kw: Optional[float]) -> None:
+        """Set electricity cost and heater power for cost estimation."""
+        with self._lock:
+            self._state.price_per_kwh = price_per_kwh
+            self._state.heater_power_kw = heater_power_kw
+            self._save_state_to_disk_locked()
+
     def stop(self) -> None:
         """Signal the background loop to stop and cleanup GPIO."""
         self._stop_event.set()
@@ -358,6 +401,12 @@ class SaunaController:
             self._state.desired_temp = float(data.get("desired_temp", self._state.desired_temp))
             self._state.heater_enabled = bool(data.get("heater_enabled", self._state.heater_enabled))
             self._state.use_imperial = bool(data.get("use_imperial", self._state.use_imperial))
+
+            # Optional persisted scheduling and cost config
+            self._state.scheduled_start_at = data.get("scheduled_start_at")
+            self._state.avg_heatup_rate_c_per_sec = data.get("avg_heatup_rate_c_per_sec")
+            self._state.price_per_kwh = data.get("price_per_kwh")
+            self._state.heater_power_kw = data.get("heater_power_kw")
             # Safety-related flags default to safe values on startup
             self._state.lockout_active = False
             self._state.lockout_reason = None
@@ -373,6 +422,10 @@ class SaunaController:
             "desired_temp": self._state.desired_temp,
             "heater_enabled": self._state.heater_enabled,
             "use_imperial": self._state.use_imperial,
+            "scheduled_start_at": self._state.scheduled_start_at,
+            "avg_heatup_rate_c_per_sec": self._state.avg_heatup_rate_c_per_sec,
+            "price_per_kwh": self._state.price_per_kwh,
+            "heater_power_kw": self._state.heater_power_kw,
         }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -404,6 +457,29 @@ class SaunaController:
                     self._state.lockout_active = True
                     self._state.lockout_reason = "max_temp"
                 else:
+                    # Simple one-shot schedule: if we have a scheduled target
+                    # time and an estimate of heat-up rate, start early enough
+                    # to reach desired temp by scheduled_start_at.
+                    if (
+                        self._state.scheduled_start_at is not None
+                        and self._state.avg_heatup_rate_c_per_sec is not None
+                        and not self._state.lockout_active
+                    ):
+                        time_until_target = self._state.scheduled_start_at - now
+                        # How long we expect to need to heat from current temp
+                        delta_c = max(desired - current_temp, 0.0)
+                        if self._state.avg_heatup_rate_c_per_sec > 0:
+                            required_heat_time = delta_c / self._state.avg_heatup_rate_c_per_sec
+                        else:
+                            required_heat_time = 0.0
+
+                        # If it's time to start heating (or we're late), enable heater
+                        if time_until_target <= required_heat_time:
+                            self._state.heater_enabled = True
+                            enabled = True
+                            # one-shot schedule; clear once we have started
+                            self._state.scheduled_start_at = None
+
                     # Handle max-on-time safety
                     if self._state.heater_on_since is not None:
                         on_duration = now - self._state.heater_on_since
@@ -440,13 +516,30 @@ class SaunaController:
                         # If not enabled or in lockout, ensure relay is off
                         self._set_relay(False)
 
-                # Track time to first reach setpoint
-                if (
-                    self._state.heater_on_since is not None
-                    and self._state.time_to_setpoint is None
-                    and current_temp >= desired
-                ):
-                    self._state.time_to_setpoint = now - self._state.heater_on_since
+                # Track time to first reach setpoint and update average heatup rate
+                if self._state.heater_on_since is not None and current_temp >= desired:
+                    elapsed = now - self._state.heater_on_since
+                    if elapsed > 0:
+                        if self._state.time_to_setpoint is None:
+                            # First time we hit setpoint for this session
+                            self._state.time_to_setpoint = elapsed
+
+                        # Update average heat-up rate (simple exponential moving average)
+                        delta_c = max(desired - self._state.current_temp + (current_temp - desired), 0.0)
+                        # Conservative: use desired - (current_temp at heater_on_since approx)
+                        # If we assume heater_on_since temp was lower, approximate delta_c
+                        if delta_c <= 0:
+                            delta_c = desired - (current_temp - 5.0)
+                        if delta_c > 0:
+                            new_rate = delta_c / elapsed
+                            old_rate = self._state.avg_heatup_rate_c_per_sec
+                            if old_rate is None:
+                                self._state.avg_heatup_rate_c_per_sec = new_rate
+                            else:
+                                alpha = 0.3
+                                self._state.avg_heatup_rate_c_per_sec = (
+                                    alpha * new_rate + (1 - alpha) * old_rate
+                                )
 
             time.sleep(CONTROL_INTERVAL_SEC)
 
