@@ -6,7 +6,7 @@ body {
 }
 
 .container {
-    max-width: 600px;
+    max-width: 960px;
     margin: 0 auto;
     padding: 1.5rem;
 }
@@ -16,11 +16,16 @@ h1 {
     margin-bottom: 1.5rem;
 }
 
-section {
+.widget-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1.25rem;
+}
+
+section.widget {
     background: #111c2b;
     border-radius: 8px;
     padding: 1rem 1.25rem;
-    margin-bottom: 1.25rem;
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
 }
 
@@ -50,20 +55,27 @@ p {
     background: #b91c1c;
 }
 
-.controls form {
-    margin: 0.5rem 0;
+.widget-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
 }
 
-.setpoint-form {
+.setpoint-form,
+.schedule-form,
+.inline-form {
     display: flex;
     flex-direction: column;
 }
 
-.setpoint-form label {
+.setpoint-form label,
+.schedule-form label {
     margin-bottom: 0.25rem;
 }
 
-.setpoint-form input[type="number"] {
+.setpoint-form input[type="number"],
+.schedule-form input[type="datetime-local"] {
     padding: 0.4rem 0.5rem;
     border-radius: 4px;
     border: 1px solid rgba(255, 255, 255, 0.2);
@@ -116,6 +128,46 @@ p {
     background: #374151;
 }
 
+.temp-reading {
+    display: flex;
+    align-items: baseline;
+    gap: 0.25rem;
+    font-size: 1.8rem;
+}
+
+.temp-value {
+    font-weight: 600;
+}
+
+.temp-unit {
+    font-size: 1.2rem;
+    opacity: 0.8;
+}
+
+.timer-display {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 1.6rem;
+    margin: 0.5rem 0;
+}
+
+.widget-note {
+    font-size: 0.85rem;
+    opacity: 0.8;
+}
+
+.session-list {
+    list-style: none;
+    padding-left: 1rem;
+    margin: 0.5rem 0 0;
+    font-size: 0.9rem;
+}
+
+.widget-link {
+    display: inline-block;
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+}
+
 footer {
     text-align: center;
     font-size: 0.8rem;
@@ -140,6 +192,6 @@ footer {
 
 @media (min-width: 768px) {
     .container {
-        max-width: 720px;
+        max-width: 960px;
     }
 }
