@@ -185,6 +185,13 @@ class SaunaState:
     price_per_kwh: Optional[float] = None  # in user currency
     heater_power_kw: Optional[float] = None  # e.g. 6.0 for 6 kW heater
 
+    # Simple timer/stopwatch state (UI only for now)
+    timer_mode: str = "stopwatch"  # "stopwatch" or "timer"
+    timer_running: bool = False
+    timer_start_ts: Optional[float] = None  # epoch seconds when started
+    timer_elapsed: float = 0.0  # accumulated seconds
+    timer_duration: Optional[float] = None  # for timer mode, total seconds
+
 
 class SaunaController:
     """Manages background reading and heater control in its own thread."""
@@ -274,6 +281,7 @@ class SaunaController:
             "heater_on": state["heater_on"],
             "status": status,
             "heater_on_for": _fmt_duration(heater_on_duration),
+            "heater_on_for_seconds": heater_on_duration,
             "time_to_setpoint": _fmt_duration(time_to_setpoint),
             "lockout_active": state.get("lockout_active", False),
             "lockout_reason": state.get("lockout_reason"),
@@ -283,6 +291,10 @@ class SaunaController:
             "avg_heatup_rate_c_per_sec": state.get("avg_heatup_rate_c_per_sec"),
             "price_per_kwh": state.get("price_per_kwh"),
             "heater_power_kw": state.get("heater_power_kw"),
+            "timer_mode": state.get("timer_mode", "stopwatch"),
+            "timer_running": state.get("timer_running", False),
+            "timer_elapsed": state.get("timer_elapsed", 0.0),
+            "timer_duration": state.get("timer_duration"),
         }
 
         # Derived cost estimate for current ON duration
@@ -374,6 +386,50 @@ class SaunaController:
         self._thread.join(timeout=2.0)
         GPIO.cleanup()
 
+    # --- Timer / stopwatch API -------------------------------------------
+
+    def timer_set_mode(self, mode: str) -> None:
+        """Set timer mode to 'stopwatch' or 'timer'."""
+        if mode not in {"stopwatch", "timer"}:
+            return
+        with self._lock:
+            self._state.timer_mode = mode
+            self._save_state_to_disk_locked()
+
+    def timer_set_duration_minutes(self, minutes: int) -> None:
+        """Set timer duration in minutes (only relevant in timer mode)."""
+        if minutes <= 0:
+            return
+        with self._lock:
+            self._state.timer_duration = float(minutes * 60)
+            self._save_state_to_disk_locked()
+
+    def timer_start(self) -> None:
+        """Start or resume timer/stopwatch."""
+        with self._lock:
+            if not self._state.timer_running:
+                self._state.timer_running = True
+                self._state.timer_start_ts = time.time()
+                self._save_state_to_disk_locked()
+
+    def timer_stop(self) -> None:
+        """Pause timer/stopwatch, accumulating elapsed time."""
+        with self._lock:
+            if self._state.timer_running and self._state.timer_start_ts is not None:
+                now = time.time()
+                self._state.timer_elapsed += now - self._state.timer_start_ts
+            self._state.timer_running = False
+            self._state.timer_start_ts = None
+            self._save_state_to_disk_locked()
+
+    def timer_reset(self) -> None:
+        """Reset elapsed time and stop timer/stopwatch."""
+        with self._lock:
+            self._state.timer_running = False
+            self._state.timer_start_ts = None
+            self._state.timer_elapsed = 0.0
+            self._save_state_to_disk_locked()
+
     # --- Internal helpers ---------------------------------------------------
 
     def _set_relay(self, on: bool) -> None:
@@ -417,6 +473,11 @@ class SaunaController:
             self._state.avg_heatup_rate_c_per_sec = data.get("avg_heatup_rate_c_per_sec")
             self._state.price_per_kwh = data.get("price_per_kwh")
             self._state.heater_power_kw = data.get("heater_power_kw")
+            # Timer/stopwatch state (optional)
+            self._state.timer_mode = data.get("timer_mode", self._state.timer_mode)
+            self._state.timer_running = bool(data.get("timer_running", self._state.timer_running))
+            self._state.timer_elapsed = float(data.get("timer_elapsed", self._state.timer_elapsed))
+            self._state.timer_duration = data.get("timer_duration", self._state.timer_duration)
             # Safety-related flags default to safe values on startup
             self._state.lockout_active = False
             self._state.lockout_reason = None
@@ -436,6 +497,10 @@ class SaunaController:
             "avg_heatup_rate_c_per_sec": self._state.avg_heatup_rate_c_per_sec,
             "price_per_kwh": self._state.price_per_kwh,
             "heater_power_kw": self._state.heater_power_kw,
+            "timer_mode": self._state.timer_mode,
+            "timer_running": self._state.timer_running,
+            "timer_elapsed": self._state.timer_elapsed,
+            "timer_duration": self._state.timer_duration,
         }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -551,6 +616,10 @@ class SaunaController:
                                 self._state.avg_heatup_rate_c_per_sec = (
                                     alpha * new_rate + (1 - alpha) * old_rate
                                 )
+
+                # Update timer/stopwatch elapsed time when running
+                if self._state.timer_running and self._state.timer_start_ts is not None:
+                    self._state.timer_elapsed += CONTROL_INTERVAL_SEC
 
             time.sleep(CONTROL_INTERVAL_SEC)
 

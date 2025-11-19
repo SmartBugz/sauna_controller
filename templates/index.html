@@ -5,6 +5,71 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Smart Sauna Controller</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+        <script>
+            document.addEventListener('DOMContentLoaded', function () {
+                function formatDuration(seconds) {
+                    if (seconds == null || isNaN(seconds)) return 'N/A';
+                    const s = Math.max(0, Math.floor(seconds));
+                    const h = String(Math.floor(s / 3600)).padStart(2, '0');
+                    const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+                    const sec = String(s % 60).padStart(2, '0');
+                    return h + ':' + m + ':' + sec;
+                }
+
+                function applyStatus(data) {
+                    const tempVal = document.getElementById('current-temp-value');
+                    const tempUnit = document.getElementById('current-temp-unit');
+                    const heaterOnFor = document.getElementById('heater-on-for');
+                    const statusBadge = document.getElementById('heater-status-badge');
+
+                    if (tempVal && typeof data.current_temp !== 'undefined') {
+                        tempVal.textContent = data.current_temp;
+                    }
+                    if (tempUnit && typeof data.unit !== 'undefined') {
+                        tempUnit.textContent = '°' + data.unit;
+                    }
+                    if (heaterOnFor) {
+                        const dur = data.heater_on_for_seconds;
+                        heaterOnFor.textContent = dur != null ? formatDuration(dur) : 'N/A';
+                    }
+                    if (statusBadge && data.status) {
+                        statusBadge.textContent = data.status;
+                        statusBadge.classList.remove('on', 'off', 'standby');
+                        if (data.status === 'Heating') {
+                            statusBadge.classList.add('on');
+                        } else if (data.status === 'Standby') {
+                            statusBadge.classList.add('standby');
+                        } else {
+                            statusBadge.classList.add('off');
+                        }
+                    }
+
+                    // Timer / stopwatch display
+                    const timerDisplay = document.getElementById('timer-display');
+                    if (timerDisplay) {
+                        let seconds = data.timer_elapsed || 0;
+                        if (data.timer_mode === 'timer' && data.timer_duration != null) {
+                            seconds = Math.max(0, data.timer_duration - seconds);
+                        }
+                        timerDisplay.textContent = formatDuration(seconds);
+                    }
+                }
+
+                function poll() {
+                    fetch("{{ url_for('api_status') }}")
+                        .then(r => r.json())
+                        .then(data => {
+                            applyStatus(data);
+                        })
+                        .catch(() => { /* ignore errors */ })
+                        .finally(() => {
+                            setTimeout(poll, 2000);
+                        });
+                }
+
+                poll();
+            });
+        </script>
 </head>
 <body>
     <div class="container">
@@ -17,11 +82,11 @@
                 <p>
                     <strong>Status:</strong>
                     {% if state.status == 'Heating' %}
-                    <span class="badge on">Heating</span>
+                    <span id="heater-status-badge" class="badge on">Heating</span>
                     {% elif state.status == 'Standby' %}
-                    <span class="badge standby">Standby</span>
+                    <span id="heater-status-badge" class="badge standby">Standby</span>
                     {% else %}
-                    <span class="badge off">Off</span>
+                    <span id="heater-status-badge" class="badge off">Off</span>
                     {% endif %}
                 </p>
 
@@ -58,12 +123,12 @@
             <section class="widget widget-current-temp">
                 <h2>Current Temp</h2>
                 <p class="temp-reading">
-                    <span class="temp-value">{{ state.current_temp }}</span>
-                    <span class="temp-unit">&deg;{{ state.unit }}</span>
+                    <span id="current-temp-value" class="temp-value">{{ state.current_temp }}</span>
+                    <span id="current-temp-unit" class="temp-unit">&deg;{{ state.unit }}</span>
                 </p>
                 <p><strong>Max Allowed:</strong> 195 &deg;F (90 &deg;C)</p>
                 <p><strong>Heater ON Duration:</strong>
-                    {{ state.heater_on_for if state.heater_on_for else 'N/A' }}
+                    <span id="heater-on-for">{{ state.heater_on_for if state.heater_on_for else 'N/A' }}</span>
                 </p>
                 <p><strong>Time to Reach Setpoint:</strong>
                     {{ state.time_to_setpoint if state.time_to_setpoint else 'N/A' }}
@@ -88,16 +153,57 @@
                 </form>
             </section>
 
-            <!-- Timer / stopwatch widget (UI only for now) -->
+            <!-- Timer / stopwatch widget -->
             <section class="widget widget-timer">
                 <h2>Timer / Stopwatch</h2>
-                <p class="widget-note">(Timer controls to be wired to backend)</p>
-                <div class="timer-display">00:00:00</div>
+
+                <form method="post" action="{{ url_for('timer_mode') }}" class="widget-actions">
+                    <input type="hidden" name="mode" value="stopwatch" />
+                    <button
+                        type="submit"
+                        class="btn btn-secondary {% if state.timer_mode == 'stopwatch' %}active{% endif %}"
+                    >
+                        Stopwatch
+                    </button>
+                </form>
+                <form method="post" action="{{ url_for('timer_mode') }}" class="widget-actions">
+                    <input type="hidden" name="mode" value="timer" />
+                    <button
+                        type="submit"
+                        class="btn btn-secondary {% if state.timer_mode == 'timer' %}active{% endif %}"
+                    >
+                        Timer
+                    </button>
+                </form>
+
+                <div id="timer-display" class="timer-display">00:00:00</div>
+
+                {% if state.timer_mode == 'timer' %}
+                <form method="post" action="{{ url_for('timer_preset') }}" class="widget-actions">
+                    <button type="submit" name="minutes" value="10" class="btn btn-secondary">10 min</button>
+                    <button type="submit" name="minutes" value="20" class="btn btn-secondary">20 min</button>
+                    <button type="submit" name="minutes" value="30" class="btn btn-secondary">30 min</button>
+                </form>
+                {% endif %}
+
                 <div class="widget-actions">
-                    <button type="button" class="btn btn-secondary" disabled>Start</button>
-                    <button type="button" class="btn btn-secondary" disabled>Stop</button>
-                    <button type="button" class="btn btn-secondary" disabled>Reset</button>
+                    <form method="post" action="{{ url_for('timer_start') }}">
+                        <button type="submit" class="btn btn-secondary">Start</button>
+                    </form>
+                    <form method="post" action="{{ url_for('timer_stop') }}">
+                        <button type="submit" class="btn btn-secondary">Stop</button>
+                    </form>
+                    <form method="post" action="{{ url_for('timer_reset') }}">
+                        <button type="submit" class="btn btn-secondary">Reset</button>
+                    </form>
                 </div>
+
+                <p class="widget-note">
+                    Mode: {{ state.timer_mode|capitalize }}
+                    {% if state.timer_mode == 'timer' and state.timer_duration %}
+                        ({{ (state.timer_duration // 60)|int }} min preset)
+                    {% endif %}
+                </p>
             </section>
 
             <!-- Schedule widget -->

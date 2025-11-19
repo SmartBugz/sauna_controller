@@ -4,7 +4,7 @@
 - Shares state with the background SaunaController via a singleton instance
 """
 
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, jsonify
 
 from sauna_controller import SaunaController
 
@@ -19,6 +19,12 @@ def index():
     """Render the main dashboard with current sauna status and controls."""
     state = controller.get_state_snapshot()
     return render_template("index.html", state=state)
+
+
+@app.route("/api/status", methods=["GET"])
+def api_status():
+    """Lightweight JSON status for live UI updates."""
+    return jsonify(controller.get_state_snapshot())
 
 
 @app.route("/heater/toggle", methods=["POST"])
@@ -121,6 +127,43 @@ def cost_config():
     price = _parse_float("price_per_kwh")
     power = _parse_float("heater_power_kw")
     controller.set_cost_config(price, power)
+    return redirect(url_for("index"))
+
+
+@app.route("/timer/mode", methods=["POST"])
+def timer_mode():
+    """Set timer widget mode to stopwatch or timer."""
+    mode = request.form.get("mode", "stopwatch")
+    controller.timer_set_mode(mode)
+    return redirect(url_for("index"))
+
+
+@app.route("/timer/preset", methods=["POST"])
+def timer_preset():
+    """Set a preset duration in minutes for timer mode."""
+    try:
+        minutes = int(request.form.get("minutes", "0"))
+    except ValueError:
+        minutes = 0
+    controller.timer_set_duration_minutes(minutes)
+    return redirect(url_for("index"))
+
+
+@app.route("/timer/start", methods=["POST"])
+def timer_start():
+    controller.timer_start()
+    return redirect(url_for("index"))
+
+
+@app.route("/timer/stop", methods=["POST"])
+def timer_stop():
+    controller.timer_stop()
+    return redirect(url_for("index"))
+
+
+@app.route("/timer/reset", methods=["POST"])
+def timer_reset():
+    controller.timer_reset()
     return redirect(url_for("index"))
 
 
