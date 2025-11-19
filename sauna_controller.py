@@ -28,7 +28,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "sauna_state.json")
 TEMP_SENSOR_GPIO = 4  # DS18B20 uses 1-Wire on GPIO4 (handled by kernel)
 RELAY_GPIO = 17       # Relay control pin (active-LOW)
 
-HYSTERESIS = 1.0  # degrees C
+HYSTERESIS = 2.5  # degrees C
 MAX_TEMP_C = 90.0  # safety limit (~194°F), below 100°C high-limit switch
 MAX_ON_TIME_SEC = 2 * 60 * 60  # 2 hours continuous ON time
 CONFIRMATION_TIMEOUT_SEC = 90  # time window to confirm extending runtime
@@ -199,8 +199,9 @@ class SaunaController:
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(RELAY_GPIO, GPIO.OUT)
 
-        # Ensure relay is off initially (active-HIGH -> set LOW)
-        GPIO.output(RELAY_GPIO, False)
+        # Ensure relay and logical state are OFF on startup for safety
+        self._state.heater_enabled = False
+        self._set_relay(False)
 
         # Start background control thread (daemon so it won't block process exit)
         self._stop_event = threading.Event()
@@ -256,6 +257,14 @@ class SaunaController:
             if remaining > 0:
                 confirmation_remaining = int(remaining)
 
+        # High-level status for UI: Off / Standby / Heating
+        if not state["heater_enabled"]:
+            status = "Off"
+        elif state["heater_on"]:
+            status = "Heating"
+        else:
+            status = "Standby"
+
         snapshot = {
             "current_temp": current_display,
             "desired_temp": desired_display,
@@ -263,6 +272,7 @@ class SaunaController:
             "use_imperial": use_imperial,
             "heater_enabled": state["heater_enabled"],
             "heater_on": state["heater_on"],
+            "status": status,
             "heater_on_for": _fmt_duration(heater_on_duration),
             "time_to_setpoint": _fmt_duration(time_to_setpoint),
             "lockout_active": state.get("lockout_active", False),
@@ -514,7 +524,8 @@ class SaunaController:
                             self._set_relay(False)
                     else:
                         # If not enabled or in lockout, ensure relay is off
-                        self._set_relay(False)
+                        if self._state.heater_on:
+                            self._set_relay(False)
 
                 # Track time to first reach setpoint and update average heatup rate
                 if self._state.heater_on_since is not None and current_temp >= desired:

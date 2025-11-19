@@ -16,9 +16,13 @@
                 <h2>Heater</h2>
                 <p>
                     <strong>Status:</strong>
-                    <span class="badge {{ 'on' if state.heater_on else 'off' }}">
-                        {{ 'ON' if state.heater_on else 'OFF' }}
-                    </span>
+                    {% if state.status == 'Heating' %}
+                    <span class="badge on">Heating</span>
+                    {% elif state.status == 'Standby' %}
+                    <span class="badge standby">Standby</span>
+                    {% else %}
+                    <span class="badge off">Off</span>
+                    {% endif %}
                 </p>
 
                 {% if state.lockout_active %}

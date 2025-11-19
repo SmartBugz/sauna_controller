@@ -55,6 +55,10 @@ p {
     background: #b91c1c;
 }
 
+.badge.standby {
+    background: #4b5563;
+}
+
 .widget-actions {
     display: flex;
     flex-wrap: wrap;
