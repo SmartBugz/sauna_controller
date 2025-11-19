@@ -20,12 +20,6 @@
                         {{ 'ON' if state.heater_on else 'OFF' }}
                     </span>
                 </p>
-                <p>
-                    <strong>Enabled:</strong>
-                    <span class="badge {{ 'on' if state.heater_enabled else 'off' }}">
-                        {{ 'YES' if state.heater_enabled else 'NO' }}
-                    </span>
-                </p>
 
                 {% if state.lockout_active %}
                 <p class="warning"><strong>Safety Lockout:</strong>
@@ -39,17 +33,21 @@
                 </p>
                 {% endif %}
 
-                <div class="widget-actions">
-                    <form method="post" action="{{ url_for('heater_on') }}">
-                        <button type="submit" class="btn btn-on" {% if state.lockout_active %}disabled{% endif %}>
-                            Turn Heater ON
-                        </button>
-                    </form>
-
-                    <form method="post" action="{{ url_for('heater_off') }}">
-                        <button type="submit" class="btn btn-off">Turn Heater OFF</button>
-                    </form>
-                </div>
+                <form method="post" action="{{ url_for('heater_toggle') }}" class="heater-toggle-form">
+                    <label class="toggle-switch">
+                        <input
+                            type="checkbox"
+                            name="heater_toggle"
+                            onchange="this.form.submit()"
+                            {% if state.heater_enabled and not state.lockout_active %}checked{% endif %}
+                            {% if state.lockout_active %}disabled{% endif %}
+                        />
+                        <span class="slider"></span>
+                    </label>
+                    <span class="toggle-label">
+                        {{ 'Enabled' if state.heater_enabled and not state.lockout_active else 'Disabled' }}
+                    </span>
+                </form>
             </section>
 
             <!-- Current temperature widget -->

@@ -21,17 +21,17 @@ def index():
     return render_template("index.html", state=state)
 
 
-@app.route("/heater/on", methods=["POST"])
-def heater_on():
-    """Explicitly enable heater operation (allows bang-bang control to drive relay)."""
-    controller.set_heater_enabled(True)
-    return redirect(url_for("index"))
+@app.route("/heater/toggle", methods=["POST"])
+def heater_toggle():
+    """Toggle heater enable flag based on current state.
 
-
-@app.route("/heater/off", methods=["POST"])
-def heater_off():
-    """Explicitly disable heater operation and turn relay off."""
-    controller.set_heater_enabled(False)
+    This is the single user-facing control: when enabled, the background
+    controller will manage the relay to track the desired temperature.
+    When disabled, the relay is forced off.
+    """
+    state = controller.get_state_snapshot()
+    current_enabled = bool(state.get("heater_enabled", False))
+    controller.set_heater_enabled(not current_enabled)
     return redirect(url_for("index"))
 
 
