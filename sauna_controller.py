@@ -199,8 +199,8 @@ class SaunaController:
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(RELAY_GPIO, GPIO.OUT)
 
-        # Ensure relay is off initially (active-LOW -> set HIGH)
-        GPIO.output(RELAY_GPIO, True)
+        # Ensure relay is off initially (active-HIGH -> set LOW)
+        GPIO.output(RELAY_GPIO, False)
 
         # Start background control thread (daemon so it won't block process exit)
         self._stop_event = threading.Event()
@@ -367,18 +367,18 @@ class SaunaController:
     # --- Internal helpers ---------------------------------------------------
 
     def _set_relay(self, on: bool) -> None:
-        """Drive the relay, honoring active-LOW behavior.
+        """Drive the relay, assuming active-HIGH behavior.
 
-        on=True  -> GPIO LOW  -> heater ON
-        on=False -> GPIO HIGH -> heater OFF
+        on=True  -> GPIO HIGH -> heater ON
+        on=False -> GPIO LOW  -> heater OFF
         """
         self._state.heater_on = on
         if on:
-            GPIO.output(RELAY_GPIO, False)  # active-LOW
+            GPIO.output(RELAY_GPIO, True)
             if self._state.heater_on_since is None:
                 self._state.heater_on_since = time.time()
         else:
-            GPIO.output(RELAY_GPIO, True)
+            GPIO.output(RELAY_GPIO, False)
             self._state.heater_on_since = None
 
     def _load_state_from_disk(self) -> None:
