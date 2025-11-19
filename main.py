@@ -149,6 +149,17 @@ def timer_preset():
     return redirect(url_for("index"))
 
 
+@app.route("/timer/custom", methods=["POST"])
+def timer_custom():
+    """Set a custom duration in minutes for timer mode."""
+    try:
+        minutes = int(request.form.get("custom_minutes", "0"))
+    except ValueError:
+        minutes = 0
+    controller.timer_set_duration_minutes(minutes)
+    return redirect(url_for("index"))
+
+
 @app.route("/timer/start", methods=["POST"])
 def timer_start():
     controller.timer_start()

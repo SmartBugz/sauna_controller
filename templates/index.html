@@ -55,17 +55,34 @@
                     }
                 }
 
+                let lastStatus = null;
+
                 function poll() {
                     fetch("{{ url_for('api_status') }}")
                         .then(r => r.json())
                         .then(data => {
-                            applyStatus(data);
+                            lastStatus = data;
                         })
                         .catch(() => { /* ignore errors */ })
                         .finally(() => {
                             setTimeout(poll, 2000);
                         });
                 }
+
+                // Smooth 1s updates for UI between polls
+                setInterval(function () {
+                    if (lastStatus) {
+                        // For stopwatch, we want seconds to tick smoothly client-side
+                        const data = Object.assign({}, lastStatus);
+                        if (data.timer_running) {
+                            data.timer_elapsed = (data.timer_elapsed || 0) + 1;
+                            if (data.timer_mode === 'timer' && data.timer_duration != null) {
+                                data.timer_elapsed = Math.min(data.timer_elapsed, data.timer_duration);
+                            }
+                        }
+                        applyStatus(data);
+                    }
+                }, 1000);
 
                 poll();
             });
@@ -183,6 +200,19 @@
                     <button type="submit" name="minutes" value="10" class="btn btn-secondary">10 min</button>
                     <button type="submit" name="minutes" value="20" class="btn btn-secondary">20 min</button>
                     <button type="submit" name="minutes" value="30" class="btn btn-secondary">30 min</button>
+                </form>
+                <form method="post" action="{{ url_for('timer_custom') }}" class="widget-actions">
+                    <label for="custom_minutes">Custom (min):</label>
+                    <input
+                        id="custom_minutes"
+                        name="custom_minutes"
+                        type="number"
+                        min="1"
+                        max="240"
+                        step="1"
+                        inputmode="numeric"
+                    />
+                    <button type="submit" class="btn">Set</button>
                 </form>
                 {% endif %}
 
