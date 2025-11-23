@@ -105,56 +105,74 @@ except Exception:  # pragma: no cover - executed only off-Pi
 # --- Temperature Reading ----------------------------------------------------
 
 
-def _find_w1_device_path() -> Optional[str]:
-    """Locate the DS18B20 w1_slave file if running on a Pi.
+def _find_all_w1_devices() -> list[str]:
+    """Locate all DS18B20 w1_slave files if running on a Pi.
 
-    Returns the full path to the w1_slave file, or None if not found.
+    Returns a list of full paths to w1_slave files, or empty list if none found.
     """
     base_dir = "/sys/bus/w1/devices"
     if not os.path.isdir(base_dir):
-        return None
+        return []
 
+    devices = []
     for name in os.listdir(base_dir):
         if name.startswith("28-"):
             device_file = os.path.join(base_dir, name, "w1_slave")
             if os.path.isfile(device_file):
-                return device_file
+                devices.append(device_file)
+    return devices
+
+
+W1_DEVICE_FILES = _find_all_w1_devices()
+
+
+def _read_sensor(device_path: str) -> Optional[float]:
+    """Read temperature from a specific DS18B20 device file.
+
+    Returns temp in Celsius or None on error.
+    """
+    try:
+        with open(device_path, "r") as f:
+            lines = f.readlines()
+        # Example lines:
+        #  f3 01 4b 46 7f ff 0c 10 5e : crc=5e YES
+        #  f3 01 4b 46 7f ff 0c 10 5e t=31062
+        if len(lines) >= 2 and "YES" in lines[0] and "t=" in lines[1]:
+            temp_str = lines[1].split("t=")[-1].strip()
+            temp_c = float(temp_str) / 1000.0
+            return temp_c
+    except Exception:
+        pass
     return None
 
 
-W1_DEVICE_FILE = _find_w1_device_path()
+def read_temps() -> tuple[float, Optional[float]]:
+    """Read temperatures from DS18B20 sensors if available.
 
+    Returns (bench_temp, ceiling_temp) in Celsius.
+    - bench_temp: primary sensor for user control (first sensor or mock).
+    - ceiling_temp: safety sensor near ceiling (second sensor or None).
 
-def read_temp() -> float:
-    """Read temperature from DS18B20 if available, otherwise return mock value.
-
-    On Raspberry Pi with 1-Wire enabled, reads from /sys/bus/w1/devices/28-*/w1_slave.
-    On a development PC, returns a synthetic temperature that slowly oscillates.
+    On a development PC, returns synthetic values.
     """
-    if W1_DEVICE_FILE and os.path.isfile(W1_DEVICE_FILE):
+    if W1_DEVICE_FILES:
         # Real sensor mode
-        try:
-            with open(W1_DEVICE_FILE, "r") as f:
-                lines = f.readlines()
-            # Example lines:
-            #  f3 01 4b 46 7f ff 0c 10 5e : crc=5e YES
-            #  f3 01 4b 46 7f ff 0c 10 5e t=31062
-            if len(lines) >= 2 and "YES" in lines[0] and "t=" in lines[1]:
-                temp_str = lines[1].split("t=")[-1].strip()
-                temp_c = float(temp_str) / 1000.0
-                return temp_c
-        except Exception:
-            # Fall through to mock on any failure
-            pass
+        bench_temp = _read_sensor(W1_DEVICE_FILES[0])
+        ceiling_temp = _read_sensor(W1_DEVICE_FILES[1]) if len(W1_DEVICE_FILES) > 1 else None
 
-    # Mock mode: simple synthetic wave between 20 and 80 degrees
+        if bench_temp is not None:
+            return (bench_temp, ceiling_temp)
+
+    # Mock mode: simple synthetic wave between 20 and 80 degrees for bench,
+    # ceiling slightly hotter
     t = time.time()
     base = 50.0
     amplitude = 30.0
-    # Use a slow sine-like pattern via cosine
     import math
 
-    return base + amplitude * math.sin(t / 120.0)
+    bench_mock = base + amplitude * math.sin(t / 120.0)
+    ceiling_mock = bench_mock + 5.0  # ceiling always ~5°C hotter in mock
+    return (bench_mock, ceiling_mock)
 
 
 # --- Shared State -----------------------------------------------------------
@@ -162,7 +180,8 @@ def read_temp() -> float:
 
 @dataclass
 class SaunaState:
-    current_temp: float = 0.0
+    current_temp: float = 0.0  # Bench-level temp (primary)
+    ceiling_temp: Optional[float] = None  # Ceiling-level temp (safety)
     desired_temp: float = 70.0  # Default desired temperature in C
     heater_enabled: bool = False  # User has explicitly allowed heater operation
     heater_on: bool = False  # Actual relay state (True means heater energized)
@@ -251,10 +270,12 @@ class SaunaController:
         if use_imperial:
             current_display = round(_to_f(state["current_temp"]), 1)
             desired_display = round(_to_f(state["desired_temp"]), 1)
+            ceiling_display = round(_to_f(state["ceiling_temp"]), 1) if state.get("ceiling_temp") is not None else None
             unit_label = "F"
         else:
             current_display = round(state["current_temp"], 1)
             desired_display = round(state["desired_temp"], 1)
+            ceiling_display = round(state["ceiling_temp"], 1) if state.get("ceiling_temp") is not None else None
             unit_label = "C"
 
         # Compute remaining confirmation time if applicable
@@ -274,6 +295,7 @@ class SaunaController:
 
         snapshot = {
             "current_temp": current_display,
+            "ceiling_temp": ceiling_display,
             "desired_temp": desired_display,
             "unit": unit_label,
             "use_imperial": use_imperial,
@@ -513,24 +535,35 @@ class SaunaController:
         """Background control loop.
 
         Runs until stop() is called. Periodically reads temperature and
-        applies simple bang-bang control with hysteresis.
+        applies dual-sensor control:
+        - Bench temp (primary): drives user setpoint.
+        - Ceiling temp (safety): prevents overheating near heater.
+        Heater turns OFF when bench >= target OR ceiling >= 93.3°C (200°F).
         """
+        CEILING_SAFETY_LIMIT_C = 93.3  # 200°F
+
         while not self._stop_event.is_set():
             now = time.time()
-            current_temp = read_temp()
+            bench_temp, ceiling_temp = read_temps()
 
             with self._lock:
-                self._state.current_temp = current_temp
+                self._state.current_temp = bench_temp
+                self._state.ceiling_temp = ceiling_temp
                 self._state.last_updated = now
 
                 desired = self._state.desired_temp
                 enabled = self._state.heater_enabled
 
-                # Enforce hard safety maximum
-                if current_temp >= MAX_TEMP_C:
+                # Enforce hard safety maximum on bench sensor
+                if bench_temp >= MAX_TEMP_C:
                     self._set_relay(False)
                     self._state.lockout_active = True
                     self._state.lockout_reason = "max_temp"
+                # Also enforce ceiling safety limit
+                elif ceiling_temp is not None and ceiling_temp >= CEILING_SAFETY_LIMIT_C:
+                    self._set_relay(False)
+                    self._state.lockout_active = True
+                    self._state.lockout_reason = "ceiling_overtemp"
                 else:
                     # Simple one-shot schedule: if we have a scheduled target
                     # time and an estimate of heat-up rate, start early enough
@@ -542,7 +575,7 @@ class SaunaController:
                     ):
                         time_until_target = self._state.scheduled_start_at - now
                         # How long we expect to need to heat from current temp
-                        delta_c = max(desired - current_temp, 0.0)
+                        delta_c = max(desired - bench_temp, 0.0)
                         if self._state.avg_heatup_rate_c_per_sec > 0:
                             required_heat_time = delta_c / self._state.avg_heatup_rate_c_per_sec
                         else:
@@ -580,12 +613,23 @@ class SaunaController:
                         self._state.lockout_active = True
                         self._state.lockout_reason = "max_on_time"
 
-                    # Normal control only if not in lockout and heater is enabled
+                    # Dual-sensor bang-bang control:
+                    # Turn ON if bench < target - hysteresis AND ceiling < safety limit.
+                    # Turn OFF if bench > target + hysteresis OR ceiling >= safety limit - hysteresis.
                     if not self._state.lockout_active and enabled:
-                        # Bang-bang control with hysteresis
-                        if current_temp < desired - HYSTERESIS:
+                        # Check if we should turn heater ON
+                        bench_wants_heat = bench_temp < desired - HYSTERESIS
+                        ceiling_safe = (ceiling_temp is None or
+                                        ceiling_temp < CEILING_SAFETY_LIMIT_C - HYSTERESIS)
+
+                        # Check if we should turn heater OFF
+                        bench_hot_enough = bench_temp > desired + HYSTERESIS
+                        ceiling_too_hot = (ceiling_temp is not None and
+                                           ceiling_temp >= CEILING_SAFETY_LIMIT_C - HYSTERESIS)
+
+                        if bench_wants_heat and ceiling_safe:
                             self._set_relay(True)
-                        elif current_temp > desired + HYSTERESIS:
+                        elif bench_hot_enough or ceiling_too_hot:
                             self._set_relay(False)
                     else:
                         # If not enabled or in lockout, ensure relay is off
@@ -593,7 +637,7 @@ class SaunaController:
                             self._set_relay(False)
 
                 # Track time to first reach setpoint and update average heatup rate
-                if self._state.heater_on_since is not None and current_temp >= desired:
+                if self._state.heater_on_since is not None and bench_temp >= desired:
                     elapsed = now - self._state.heater_on_since
                     if elapsed > 0:
                         if self._state.time_to_setpoint is None:
@@ -601,11 +645,11 @@ class SaunaController:
                             self._state.time_to_setpoint = elapsed
 
                         # Update average heat-up rate (simple exponential moving average)
-                        delta_c = max(desired - self._state.current_temp + (current_temp - desired), 0.0)
-                        # Conservative: use desired - (current_temp at heater_on_since approx)
+                        delta_c = max(desired - self._state.current_temp + (bench_temp - desired), 0.0)
+                        # Conservative: use desired - (bench_temp at heater_on_since approx)
                         # If we assume heater_on_since temp was lower, approximate delta_c
                         if delta_c <= 0:
-                            delta_c = desired - (current_temp - 5.0)
+                            delta_c = desired - (bench_temp - 5.0)
                         if delta_c > 0:
                             new_rate = delta_c / elapsed
                             old_rate = self._state.avg_heatup_rate_c_per_sec

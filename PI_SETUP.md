@@ -2,11 +2,40 @@
 
 This guide shows how to:
 
+- Wire dual DS18B20 temperature sensors (bench and ceiling).
 - Run the Flask app as a background service that restarts after reboots or power loss.
 - Launch the UI automatically in kiosk mode on the Pi 7" touchscreen.
 - Create a simple desktop shortcut to start the app manually if desired.
 
 > All paths below assume the project is cloned to `/home/pi/sauna_controller` and the virtualenv is at `/home/pi/sauna_controller/.venv`.
+
+---
+
+## 0. Hardware Wiring
+
+### Temperature Sensors (Dual DS18B20)
+
+The system uses **two** DS18B20 1-Wire temperature sensors:
+- **Sensor 1 (Bench Level):** Primary control sensor. Place this at sitting height where users experience the heat.
+- **Sensor 2 (Ceiling Level):** Safety cutoff sensor. Place this near the ceiling above the heater.
+
+**Wiring (both sensors share the same GPIO 4 data line):**
+- **Data pin** → GPIO 4 (both sensors in parallel)
+- **VCC** → 3.3V
+- **GND** → Ground
+- **Pull-up resistor:** 4.7kΩ between data line and 3.3V (shared by both)
+
+**Control Logic:**
+- Heater turns ON when: `bench_temp < target - hysteresis` AND `ceiling_temp < 200°F (93.3°C) - hysteresis`
+- Heater turns OFF when: `bench_temp > target + hysteresis` OR `ceiling_temp >= 200°F (93.3°C) - hysteresis`
+
+This prevents the sauna from overheating near the ceiling while ensuring proper heat at bench level.
+
+### Relay
+
+- **Relay control pin:** GPIO 17 (BCM numbering)
+- **Relay type:** Active-HIGH (HIGH = heater ON, LOW = heater OFF)
+- Connect relay to your sauna heater contactor per manufacturer specs.
 
 ---
 

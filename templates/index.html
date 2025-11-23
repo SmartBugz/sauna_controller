@@ -19,6 +19,8 @@
                 function applyStatus(data) {
                     const tempVal = document.getElementById('current-temp-value');
                     const tempUnit = document.getElementById('current-temp-unit');
+                    const ceilingVal = document.getElementById('ceiling-temp-value');
+                    const ceilingUnit = document.getElementById('ceiling-temp-unit');
                     const heaterOnFor = document.getElementById('heater-on-for');
                     const statusBadge = document.getElementById('heater-status-badge');
 
@@ -27,6 +29,12 @@
                     }
                     if (tempUnit && typeof data.unit !== 'undefined') {
                         tempUnit.textContent = '°' + data.unit;
+                    }
+                    if (ceilingVal && typeof data.ceiling_temp !== 'undefined' && data.ceiling_temp != null) {
+                        ceilingVal.textContent = data.ceiling_temp;
+                    }
+                    if (ceilingUnit && typeof data.unit !== 'undefined') {
+                        ceilingUnit.textContent = '°' + data.unit;
                     }
                     if (heaterOnFor) {
                         const dur = data.heater_on_for_seconds;
@@ -111,6 +119,8 @@
                 <p class="warning"><strong>Safety Lockout:</strong>
                     {% if state.lockout_reason == 'max_temp' %}
                         Temperature safety limit reached. Heater has been shut off.
+                    {% elif state.lockout_reason == 'ceiling_overtemp' %}
+                        Ceiling temperature limit reached (200°F / 93°C). Heater has been shut off.
                     {% elif state.lockout_reason == 'max_on_time' %}
                         Maximum continuous run time reached. Heater has been shut off.
                     {% else %}
@@ -138,12 +148,20 @@
 
             <!-- Current temperature widget -->
             <section class="widget widget-current-temp">
-                <h2>Current Temp</h2>
+                <h2>Temperatures</h2>
+                <p><strong>Bench Level:</strong></p>
                 <p class="temp-reading">
                     <span id="current-temp-value" class="temp-value">{{ state.current_temp }}</span>
                     <span id="current-temp-unit" class="temp-unit">&deg;{{ state.unit }}</span>
                 </p>
-                <p><strong>Max Allowed:</strong> 195 &deg;F (90 &deg;C)</p>
+                {% if state.ceiling_temp is not none %}
+                <p><strong>Ceiling Level:</strong></p>
+                <p class="temp-reading">
+                    <span id="ceiling-temp-value" class="temp-value">{{ state.ceiling_temp }}</span>
+                    <span id="ceiling-temp-unit" class="temp-unit">&deg;{{ state.unit }}</span>
+                </p>
+                {% endif %}
+                <p><strong>Max Ceiling Allowed:</strong> 200 &deg;F (93 &deg;C)</p>
                 <p><strong>Heater ON Duration:</strong>
                     <span id="heater-on-for">{{ state.heater_on_for if state.heater_on_for else 'N/A' }}</span>
                 </p>
@@ -154,10 +172,10 @@
 
             <!-- Desired temperature widget -->
             <section class="widget widget-setpoint">
-                <h2>Setpoint</h2>
-                <p><strong>Current Setpoint:</strong> {{ state.desired_temp }} &deg;{{ state.unit }}</p>
+                <h2>Target Temp (Bench)</h2>
+                <p><strong>Current Target:</strong> {{ state.desired_temp }} &deg;{{ state.unit }}</p>
                 <form method="post" action="{{ url_for('update_setpoint') }}" class="setpoint-form">
-                    <label for="desired_temp">New Setpoint (&deg;{{ state.unit }}):</label>
+                    <label for="desired_temp">New Target (&deg;{{ state.unit }}):</label>
                     <input
                         type="number"
                         step="0.5"
