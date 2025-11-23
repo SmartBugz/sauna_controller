@@ -105,25 +105,25 @@ except Exception:  # pragma: no cover - executed only off-Pi
 # --- Temperature Reading ----------------------------------------------------
 
 
-def _find_all_w1_devices() -> list[str]:
-    """Locate all DS18B20 w1_slave files if running on a Pi.
+def _find_all_w1_devices() -> dict[str, str]:
+    """Locate all DS18B20 sensors and return a map of sensor_id -> device_path.
 
-    Returns a list of full paths to w1_slave files, or empty list if none found.
+    Returns dict like {'28-0000012345ab': '/sys/bus/w1/devices/28-0000012345ab/w1_slave', ...}
     """
     base_dir = "/sys/bus/w1/devices"
     if not os.path.isdir(base_dir):
-        return []
+        return {}
 
-    devices = []
+    devices = {}
     for name in os.listdir(base_dir):
         if name.startswith("28-"):
             device_file = os.path.join(base_dir, name, "w1_slave")
             if os.path.isfile(device_file):
-                devices.append(device_file)
+                devices[name] = device_file
     return devices
 
 
-W1_DEVICE_FILES = _find_all_w1_devices()
+W1_DEVICES = _find_all_w1_devices()
 
 
 def _read_sensor(device_path: str) -> Optional[float]:
@@ -146,19 +146,31 @@ def _read_sensor(device_path: str) -> Optional[float]:
     return None
 
 
-def read_temps() -> tuple[float, Optional[float]]:
+def read_temps(bench_sensor_id: Optional[str] = None, ceiling_sensor_id: Optional[str] = None) -> tuple[float, Optional[float]]:
     """Read temperatures from DS18B20 sensors if available.
 
     Returns (bench_temp, ceiling_temp) in Celsius.
-    - bench_temp: primary sensor for user control (first sensor or mock).
-    - ceiling_temp: safety sensor near ceiling (second sensor or None).
+    - bench_temp: primary sensor for user control.
+    - ceiling_temp: safety sensor near ceiling.
 
+    If sensor IDs are provided and match detected sensors, reads from those specific sensors.
     On a development PC, returns synthetic values.
     """
-    if W1_DEVICE_FILES:
-        # Real sensor mode
-        bench_temp = _read_sensor(W1_DEVICE_FILES[0])
-        ceiling_temp = _read_sensor(W1_DEVICE_FILES[1]) if len(W1_DEVICE_FILES) > 1 else None
+    if W1_DEVICES:
+        # Real sensor mode - use configured IDs if available
+        bench_temp = None
+        ceiling_temp = None
+
+        if bench_sensor_id and bench_sensor_id in W1_DEVICES:
+            bench_temp = _read_sensor(W1_DEVICES[bench_sensor_id])
+        
+        if ceiling_sensor_id and ceiling_sensor_id in W1_DEVICES:
+            ceiling_temp = _read_sensor(W1_DEVICES[ceiling_sensor_id])
+
+        # If no configured IDs or they don't match, fall back to first sensor for bench
+        if bench_temp is None:
+            first_id = list(W1_DEVICES.keys())[0]
+            bench_temp = _read_sensor(W1_DEVICES[first_id])
 
         if bench_temp is not None:
             return (bench_temp, ceiling_temp)
@@ -211,6 +223,10 @@ class SaunaState:
     timer_elapsed: float = 0.0  # accumulated seconds
     timer_duration: Optional[float] = None  # for timer mode, total seconds
 
+    # Sensor ID configuration (DS18B20 unique IDs)
+    bench_sensor_id: Optional[str] = None  # e.g. "28-0000012345ab"
+    ceiling_sensor_id: Optional[str] = None  # e.g. "28-0000067890cd"
+
 
 class SaunaController:
     """Manages background reading and heater control in its own thread."""
@@ -228,6 +244,17 @@ class SaunaController:
         # Ensure relay and logical state are OFF on startup for safety
         self._state.heater_enabled = False
         self._set_relay(False)
+
+        # Log detected sensors for configuration
+        if W1_DEVICES:
+            print("\n=== Detected DS18B20 Sensors ===")
+            for sensor_id in W1_DEVICES.keys():
+                print(f"  {sensor_id}")
+            print("\nTo configure which sensor is bench vs ceiling:")
+            print(f"Edit {self.config_path} and set:")
+            print('  "bench_sensor_id": "28-XXXXXXXXXXXX"')
+            print('  "ceiling_sensor_id": "28-YYYYYYYYYYYY"')
+            print("================================\n")
 
         # Start background control thread (daemon so it won't block process exit)
         self._stop_event = threading.Event()
@@ -500,6 +527,9 @@ class SaunaController:
             self._state.timer_running = bool(data.get("timer_running", self._state.timer_running))
             self._state.timer_elapsed = float(data.get("timer_elapsed", self._state.timer_elapsed))
             self._state.timer_duration = data.get("timer_duration", self._state.timer_duration)
+            # Sensor ID configuration
+            self._state.bench_sensor_id = data.get("bench_sensor_id")
+            self._state.ceiling_sensor_id = data.get("ceiling_sensor_id")
             # Safety-related flags default to safe values on startup
             self._state.lockout_active = False
             self._state.lockout_reason = None
@@ -523,6 +553,8 @@ class SaunaController:
             "timer_running": self._state.timer_running,
             "timer_elapsed": self._state.timer_elapsed,
             "timer_duration": self._state.timer_duration,
+            "bench_sensor_id": self._state.bench_sensor_id,
+            "ceiling_sensor_id": self._state.ceiling_sensor_id,
         }
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -544,7 +576,10 @@ class SaunaController:
 
         while not self._stop_event.is_set():
             now = time.time()
-            bench_temp, ceiling_temp = read_temps()
+            bench_temp, ceiling_temp = read_temps(
+                self._state.bench_sensor_id,
+                self._state.ceiling_sensor_id
+            )
 
             with self._lock:
                 self._state.current_temp = bench_temp
