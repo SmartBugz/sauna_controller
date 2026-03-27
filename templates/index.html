@@ -2,329 +2,440 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Smart Sauna Controller</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
-        <script>
-            document.addEventListener('DOMContentLoaded', function () {
-                function formatDuration(seconds) {
-                    if (seconds == null || isNaN(seconds)) return 'N/A';
-                    const s = Math.max(0, Math.floor(seconds));
-                    const h = String(Math.floor(s / 3600)).padStart(2, '0');
-                    const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
-                    const sec = String(s % 60).padStart(2, '0');
-                    return h + ':' + m + ':' + sec;
-                }
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            function formatDuration(seconds) {
+                if (seconds == null || isNaN(seconds)) return 'N/A';
+                const s = Math.max(0, Math.floor(seconds));
+                const h = String(Math.floor(s / 3600)).padStart(2, '0');
+                const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+                const sec = String(s % 60).padStart(2, '0');
+                return h + ':' + m + ':' + sec;
+            }
 
-                function applyStatus(data) {
-                    const tempVal = document.getElementById('current-temp-value');
-                    const tempUnit = document.getElementById('current-temp-unit');
-                    const ceilingVal = document.getElementById('ceiling-temp-value');
-                    const ceilingUnit = document.getElementById('ceiling-temp-unit');
-                    const heaterOnFor = document.getElementById('heater-on-for');
-                    const statusBadge = document.getElementById('heater-status-badge');
+            function applyStatus(data) {
+                const tempVal = document.getElementById('current-temp-value');
+                const tempUnit = document.getElementById('current-temp-unit');
+                const limitVal = document.getElementById('limit-temp-value');
+                const limitUnit = document.getElementById('limit-temp-unit');
+                const heaterOnFor = document.getElementById('heater-on-for');
+                const statusBadge = document.getElementById('heater-status-badge');
+                const mqttStatus = document.getElementById('mqtt-status');
 
-                    if (tempVal && typeof data.current_temp !== 'undefined') {
-                        tempVal.textContent = data.current_temp;
-                    }
-                    if (tempUnit && typeof data.unit !== 'undefined') {
-                        tempUnit.textContent = '°' + data.unit;
-                    }
-                    if (ceilingVal && typeof data.ceiling_temp !== 'undefined' && data.ceiling_temp != null) {
-                        ceilingVal.textContent = data.ceiling_temp;
-                    }
-                    if (ceilingUnit && typeof data.unit !== 'undefined') {
-                        ceilingUnit.textContent = '°' + data.unit;
-                    }
-                    if (heaterOnFor) {
-                        const dur = data.heater_on_for_seconds;
-                        heaterOnFor.textContent = dur != null ? formatDuration(dur) : 'N/A';
-                    }
-                    if (statusBadge && data.status) {
-                        statusBadge.textContent = data.status;
-                        statusBadge.classList.remove('on', 'off', 'standby');
-                        if (data.status === 'Heating') {
-                            statusBadge.classList.add('on');
-                        } else if (data.status === 'Standby') {
-                            statusBadge.classList.add('standby');
-                        } else {
-                            statusBadge.classList.add('off');
-                        }
-                    }
+                if (tempVal && typeof data.current_temp !== 'undefined') tempVal.textContent = data.current_temp;
+                if (tempUnit && typeof data.unit !== 'undefined') tempUnit.textContent = '°' + data.unit;
 
-                    // Timer / stopwatch display
-                    const timerDisplay = document.getElementById('timer-display');
-                    if (timerDisplay) {
-                        let seconds = data.timer_elapsed || 0;
-                        if (data.timer_mode === 'timer' && data.timer_duration != null) {
-                            seconds = Math.max(0, data.timer_duration - seconds);
-                        }
-                        timerDisplay.textContent = formatDuration(seconds);
+                if (limitVal) {
+                    if (typeof data.limit_sensor_temp !== 'undefined' && data.limit_sensor_temp != null) {
+                        limitVal.textContent = data.limit_sensor_temp;
+                    } else {
+                        limitVal.textContent = 'N/A';
                     }
                 }
+                if (limitUnit && typeof data.unit !== 'undefined') limitUnit.textContent = '°' + data.unit;
 
-                let lastStatus = null;
-
-                function poll() {
-                    fetch("{{ url_for('api_status') }}")
-                        .then(r => r.json())
-                        .then(data => {
-                            lastStatus = data;
-                        })
-                        .catch(() => { /* ignore errors */ })
-                        .finally(() => {
-                            setTimeout(poll, 2000);
-                        });
+                if (heaterOnFor) {
+                    const dur = data.heater_on_for_seconds;
+                    heaterOnFor.textContent = dur != null ? formatDuration(dur) : 'N/A';
                 }
 
-                // Smooth 1s updates for UI between polls
-                setInterval(function () {
-                    if (lastStatus) {
-                        // For stopwatch, we want seconds to tick smoothly client-side
-                        const data = Object.assign({}, lastStatus);
-                        if (data.timer_running) {
-                            data.timer_elapsed = (data.timer_elapsed || 0) + 1;
-                            if (data.timer_mode === 'timer' && data.timer_duration != null) {
-                                data.timer_elapsed = Math.min(data.timer_elapsed, data.timer_duration);
-                            }
-                        }
+                if (statusBadge && data.status) {
+                    statusBadge.textContent = data.status;
+                    statusBadge.classList.remove('on', 'off', 'standby');
+                    if (data.status === 'Heating') statusBadge.classList.add('on');
+                    else if (data.status === 'Standby') statusBadge.classList.add('standby');
+                    else statusBadge.classList.add('off');
+                }
+
+                if (mqttStatus) {
+                    mqttStatus.textContent = data.mqtt_connected ? 'Connected' : 'Disconnected';
+                }
+
+                const timerDisplay = document.getElementById('timer-display');
+                if (timerDisplay) {
+                    let seconds = data.timer_elapsed || 0;
+                    if (data.timer_mode === 'timer' && data.timer_duration != null) {
+                        seconds = Math.max(0, data.timer_duration - seconds);
+                    }
+                    timerDisplay.textContent = formatDuration(seconds);
+                }
+            }
+
+            let lastStatus = null;
+
+            function poll() {
+                fetch("{{ url_for('api_status') }}")
+                    .then(r => r.json())
+                    .then(data => {
+                        lastStatus = data;
                         applyStatus(data);
+                    })
+                    .catch(() => {})
+                    .finally(() => {
+                        setTimeout(poll, 2000);
+                    });
+            }
+
+            setInterval(function () {
+                if (!lastStatus) return;
+                const data = Object.assign({}, lastStatus);
+                if (data.timer_running) {
+                    data.timer_elapsed = (data.timer_elapsed || 0) + 1;
+                    if (data.timer_mode === 'timer' && data.timer_duration != null) {
+                        data.timer_elapsed = Math.min(data.timer_elapsed, data.timer_duration);
                     }
-                }, 1000);
+                }
+                applyStatus(data);
+            }, 1000);
 
-                poll();
+            poll();
+
+            // Tab switching for kiosk
+            window.switchTab = function(tabName, buttonEl) {
+                const tabs = document.querySelectorAll('[data-tab]');
+                const buttons = document.querySelectorAll('.tab-btn');
+                
+                tabs.forEach(tab => tab.classList.remove('active'));
+                buttons.forEach(btn => btn.classList.remove('active'));
+                
+                const activeTab = document.querySelector(`[data-tab="${tabName}"]`);
+                if (activeTab) activeTab.classList.add('active');
+                if (buttonEl) buttonEl.classList.add('active');
+                else {
+                    const activeBtn = document.querySelector(`[data-tab-btn="${tabName}"]`);
+                    if (activeBtn) activeBtn.classList.add('active');
+                }
+                
+                localStorage.setItem('activeTab', tabName);
+            };
+
+            function setModalState(modal, isOpen) {
+                if (!modal) return;
+                modal.classList.toggle('active', isOpen);
+                modal.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+                document.body.classList.toggle('modal-open', isOpen);
+            }
+
+            document.querySelectorAll('[data-open-modal]').forEach(btn => {
+                btn.addEventListener('click', function () {
+                    const modal = document.getElementById(btn.dataset.openModal);
+                    setModalState(modal, true);
+                });
             });
-        </script>
+
+            document.querySelectorAll('[data-close-modal]').forEach(btn => {
+                btn.addEventListener('click', function () {
+                    const modal = document.getElementById(btn.dataset.closeModal);
+                    setModalState(modal, false);
+                });
+            });
+
+            document.querySelectorAll('.modal-overlay').forEach(modal => {
+                modal.addEventListener('click', function (e) {
+                    if (e.target === modal) {
+                        setModalState(modal, false);
+                    }
+                });
+            });
+
+            document.addEventListener('keydown', function (e) {
+                if (e.key !== 'Escape') return;
+                document.querySelectorAll('.modal-overlay.active').forEach(modal => {
+                    setModalState(modal, false);
+                });
+            });
+
+            // Restore last active tab
+            const lastTab = localStorage.getItem('activeTab') || 'dashboard';
+            const tabElement = document.querySelector(`[data-tab="${lastTab}"]`);
+            if (tabElement) {
+                tabElement.classList.add('active');
+                const btn = document.querySelector(`[data-tab-btn="${lastTab}"]`);
+                if (btn) btn.classList.add('active');
+            }
+        });
+    </script>
 </head>
-<body>
-    <div class="container">
-        <h1>Smart Sauna Controller</h1>
+<body class="kiosk-layout">
+    <div class="container kiosk-container">
+        <!-- TAB CONTENT AREA -->
+        <div class="tab-content-wrapper">
+            <!-- DASHBOARD TAB -->
+            <section data-tab="dashboard" class="tab-content active">
+                <div class="dashboard-grid">
+                    <!-- Heater Control -->
+                    <div class="widget widget-heater">
+                        <h2>Heater</h2>
+                        <p>
+                            <strong>Status:</strong>
+                            {% if state.status == 'Heating' %}
+                            <span id="heater-status-badge" class="badge on">Heating</span>
+                            {% elif state.status == 'Standby' %}
+                            <span id="heater-status-badge" class="badge standby">Standby</span>
+                            {% else %}
+                            <span id="heater-status-badge" class="badge off">Off</span>
+                            {% endif %}
+                        </p>
 
-        <div class="widget-grid">
-            <!-- Heater control widget -->
-            <section class="widget widget-heater">
-                <h2>Heater</h2>
-                <p>
-                    <strong>Status:</strong>
-                    {% if state.status == 'Heating' %}
-                    <span id="heater-status-badge" class="badge on">Heating</span>
-                    {% elif state.status == 'Standby' %}
-                    <span id="heater-status-badge" class="badge standby">Standby</span>
-                    {% else %}
-                    <span id="heater-status-badge" class="badge off">Off</span>
-                    {% endif %}
-                </p>
+                        {% if state.lockout_active %}
+                        <p class="warning"><strong>Safety Lockout:</strong>
+                            {% if state.lockout_reason == 'max_temp' %}
+                                Absolute max temperature reached.
+                            {% elif state.lockout_reason == 'max_on_time' %}
+                                Maximum runtime reached.
+                            {% else %}
+                                Safety lockout is active.
+                            {% endif %}
+                        </p>
+                        {% endif %}
 
-                {% if state.lockout_active %}
-                <p class="warning"><strong>Safety Lockout:</strong>
-                    {% if state.lockout_reason == 'max_temp' %}
-                        Temperature safety limit reached. Heater has been shut off.
-                    {% elif state.lockout_reason == 'ceiling_overtemp' %}
-                        Ceiling temperature limit reached (200°F / 93°C). Heater has been shut off.
-                    {% elif state.lockout_reason == 'max_on_time' %}
-                        Maximum continuous run time reached. Heater has been shut off.
-                    {% else %}
-                        Safety lockout is active.
-                    {% endif %}
-                </p>
-                {% endif %}
+                        {% if state.confirmation_required %}
+                        <div class="confirmation">
+                            <p><strong>Continue heating?</strong></p>
+                            <p>{{ state.confirmation_remaining if state.confirmation_remaining else 0 }}s left</p>
+                            <form method="post" action="{{ url_for('heater_confirm_continue') }}">
+                                <button type="submit" class="btn btn-primary">Confirm</button>
+                            </form>
+                        </div>
+                        {% endif %}
 
-                <form method="post" action="{{ url_for('heater_toggle') }}" class="heater-toggle-form">
-                    <label class="toggle-switch">
-                        <input
-                            type="checkbox"
-                            name="heater_toggle"
-                            onchange="this.form.submit()"
-                            {% if state.heater_enabled and not state.lockout_active %}checked{% endif %}
-                            {% if state.lockout_active %}disabled{% endif %}
-                        />
-                        <span class="slider"></span>
-                    </label>
-                    <span class="toggle-label">
-                        {{ 'Enabled' if state.heater_enabled and not state.lockout_active else 'Disabled' }}
-                    </span>
-                </form>
+                        <form method="post" action="{{ url_for('heater_toggle') }}" class="heater-toggle-form">
+                            <label class="toggle-switch toggle-large">
+                                <input
+                                    type="checkbox"
+                                    name="heater_toggle"
+                                    onchange="this.form.submit()"
+                                    {% if state.heater_enabled and not state.lockout_active %}checked{% endif %}
+                                    {% if state.lockout_active %}disabled{% endif %}
+                                />
+                                <span class="slider"></span>
+                            </label>
+                            <span class="toggle-label">
+                                {{ 'Enabled' if state.heater_enabled and not state.lockout_active else 'Disabled' }}
+                            </span>
+                        </form>
+                    </div>
+
+                    <!-- Temperature Display -->
+                    <div class="widget widget-current-temp">
+                        <h2>Current Temperature</h2>
+                        <p class="temp-reading-large">
+                            <span id="current-temp-value" class="temp-value-large">{{ state.current_temp }}</span>
+                            <span id="current-temp-unit" class="temp-unit-large">&deg;{{ state.unit }}</span>
+                        </p>
+                        {% if state.thermometer_mode == 'dual' %}
+                        <p class="temp-secondary">Limit: <span id="limit-temp-value">{{ state.limit_sensor_temp if state.limit_sensor_temp is not none else 'N/A' }}</span><span id="limit-temp-unit">&deg;{{ state.unit }}</span></p>
+                        {% endif %}
+                    </div>
+
+                    <!-- Setpoint Control -->
+                    <div class="widget widget-setpoint">
+                        <h2>Goal Temperature</h2>
+                        <p class="current-setpoint">{{ state.desired_temp }}&deg;{{ state.unit }}</p>
+                        <form method="post" action="{{ url_for('update_setpoint') }}" class="setpoint-form">
+                            <input type="number" step="0.5" id="desired_temp" name="desired_temp" value="{{ state.desired_temp }}" required />
+                            <button type="submit" class="btn btn-primary">Set</button>
+                        </form>
+                        {% if state.thermometer_mode == 'dual' %}
+                        <hr />
+                        <p><small>Limit: {{ state.limit_temp }}&deg;{{ state.unit }}</small></p>
+                        <form method="post" action="{{ url_for('update_limit_setpoint') }}" class="setpoint-form">
+                            <input type="number" step="0.5" id="limit_temp" name="limit_temp" value="{{ state.limit_temp }}" required />
+                            <button type="submit" class="btn btn-secondary">Set Limit</button>
+                        </form>
+                        {% endif %}
+                    </div>
+
+                    <!-- Timer/Stopwatch -->
+                    <div class="widget widget-timer">
+                        <h2>Timer</h2>
+                        <div id="timer-display" class="timer-display">00:00:00</div>
+                        <div class="timer-controls">
+                            <form method="post" action="{{ url_for('timer_mode') }}" style="display:inline;">
+                                <input type="hidden" name="mode" value="stopwatch" />
+                                <button type="submit" class="btn btn-secondary {% if state.timer_mode == 'stopwatch' %}active{% endif %}">Stopwatch</button>
+                            </form>
+                            <form method="post" action="{{ url_for('timer_mode') }}" style="display:inline;">
+                                <input type="hidden" name="mode" value="timer" />
+                                <button type="submit" class="btn btn-secondary {% if state.timer_mode == 'timer' %}active{% endif %}">Timer</button>
+                            </form>
+                        </div>
+                        {% if state.timer_mode == 'timer' %}
+                        <form method="post" action="{{ url_for('timer_preset') }}" class="timer-presets">
+                            <button type="submit" name="minutes" value="10" class="btn btn-sm">10m</button>
+                            <button type="submit" name="minutes" value="20" class="btn btn-sm">20m</button>
+                            <button type="submit" name="minutes" value="30" class="btn btn-sm">30m</button>
+                        </form>
+                        {% endif %}
+                        <div class="timer-actions">
+                            <form method="post" action="{{ url_for('timer_start') }}" style="display:inline;"><button type="submit" class="btn btn-sm">Start</button></form>
+                            <form method="post" action="{{ url_for('timer_stop') }}" style="display:inline;"><button type="submit" class="btn btn-sm">Stop</button></form>
+                            <form method="post" action="{{ url_for('timer_reset') }}" style="display:inline;"><button type="submit" class="btn btn-sm">Reset</button></form>
+                        </div>
+                    </div>
+                </div>
             </section>
 
-            <!-- Current temperature widget -->
-            <section class="widget widget-current-temp">
-                <h2>Temperatures</h2>
-                <p><strong>Bench Level:</strong></p>
-                <p class="temp-reading">
-                    <span id="current-temp-value" class="temp-value">{{ state.current_temp }}</span>
-                    <span id="current-temp-unit" class="temp-unit">&deg;{{ state.unit }}</span>
-                </p>
-                {% if state.ceiling_temp is not none %}
-                <p><strong>Ceiling Level:</strong></p>
-                <p class="temp-reading">
-                    <span id="ceiling-temp-value" class="temp-value">{{ state.ceiling_temp }}</span>
-                    <span id="ceiling-temp-unit" class="temp-unit">&deg;{{ state.unit }}</span>
-                </p>
-                {% endif %}
-                <p><strong>Max Ceiling Allowed:</strong> 200 &deg;F (93 &deg;C)</p>
-                <p><strong>Heater ON Duration:</strong>
-                    <span id="heater-on-for">{{ state.heater_on_for if state.heater_on_for else 'N/A' }}</span>
-                </p>
-                <p><strong>Time to Reach Setpoint:</strong>
-                    {{ state.time_to_setpoint if state.time_to_setpoint else 'N/A' }}
-                </p>
+            <!-- TOOLS TAB -->
+            <section data-tab="tools" class="tab-content">
+                <div class="tools-grid">
+                    <!-- Schedule -->
+                    <div class="widget widget-schedule">
+                        <h2>Schedule</h2>
+                        <p class="widget-note">Pick a future time when you want the sauna hot.</p>
+                        <form method="post" action="{{ url_for('set_schedule') }}" class="schedule-form">
+                            <input type="datetime-local" id="schedule_time" name="schedule_time" />
+                            <button type="submit" class="btn btn-primary">Schedule</button>
+                        </form>
+                        {% if state.scheduled_start_at %}
+                        <p class="widget-note success">Schedule is active.</p>
+                        {% endif %}
+                    </div>
+
+                    <!-- Electricity Cost -->
+                    <div class="widget widget-cost">
+                        <h2>Electricity Cost</h2>
+                        <form method="post" action="{{ url_for('cost_config') }}" class="setpoint-form">
+                            <label for="price_per_kwh">Price per kWh ($):</label>
+                            <input type="number" step="0.0001" id="price_per_kwh" name="price_per_kwh" value="{{ state.price_per_kwh if state.price_per_kwh is not none else '' }}" />
+
+                            <label for="heater_power_kw">Heater Power (kW):</label>
+                            <input type="number" step="0.1" id="heater_power_kw" name="heater_power_kw" value="{{ state.heater_power_kw if state.heater_power_kw is not none else '' }}" />
+
+                            <button type="submit" class="btn btn-primary">Save</button>
+                        </form>
+                    </div>
+                </div>
             </section>
 
-            <!-- Desired temperature widget -->
-            <section class="widget widget-setpoint">
-                <h2>Target Temp (Bench)</h2>
-                <p><strong>Current Target:</strong> {{ state.desired_temp }} &deg;{{ state.unit }}</p>
-                <form method="post" action="{{ url_for('update_setpoint') }}" class="setpoint-form">
-                    <label for="desired_temp">New Target (&deg;{{ state.unit }}):</label>
-                    <input
-                        type="number"
-                        step="0.5"
-                        id="desired_temp"
-                        name="desired_temp"
-                        value="{{ state.desired_temp }}"
-                        required
-                    />
-                    <button type="submit" class="btn">Save Setpoint</button>
-                </form>
-            </section>
+            <!-- SETTINGS TAB -->
+            <section data-tab="settings" class="tab-content">
+                <div class="settings-grid">
+                    <!-- Display Units -->
+                    <div class="widget widget-units">
+                        <h2>Units</h2>
+                        <p>Currently: <strong>{{ 'Fahrenheit (°F)' if state.use_imperial else 'Celsius (°C)' }}</strong></p>
+                        <form method="post" action="{{ url_for('toggle_units') }}" class="inline-form">
+                            <button type="submit" class="btn btn-primary">Switch to {{ 'Metric (°C)' if state.use_imperial else 'Imperial (°F)' }}</button>
+                        </form>
+                    </div>
 
-            <!-- Timer / stopwatch widget -->
-            <section class="widget widget-timer">
-                <h2>Timer / Stopwatch</h2>
+                    <!-- Thermometer Setup -->
+                    <div class="widget widget-thermometer-config">
+                        <h2>Thermometer Setup</h2>
+                        <p class="widget-note">Mode: <strong>{{ state.thermometer_mode|capitalize }}</strong></p>
+                        <p class="widget-note">Goal Sensor: <strong>{{ state.goal_sensor_type|capitalize }}</strong></p>
+                        <p class="widget-note">Limit Sensor: <strong>{{ state.limit_sensor_type|capitalize }}</strong></p>
+                        <button type="button" class="btn btn-primary" data-open-modal="thermometer-modal">Edit Thermometer Setup</button>
+                    </div>
 
-                <form method="post" action="{{ url_for('timer_mode') }}" class="widget-actions">
-                    <input type="hidden" name="mode" value="stopwatch" />
-                    <button
-                        type="submit"
-                        class="btn btn-secondary {% if state.timer_mode == 'stopwatch' %}active{% endif %}"
-                    >
-                        Stopwatch
-                    </button>
-                </form>
-                <form method="post" action="{{ url_for('timer_mode') }}" class="widget-actions">
-                    <input type="hidden" name="mode" value="timer" />
-                    <button
-                        type="submit"
-                        class="btn btn-secondary {% if state.timer_mode == 'timer' %}active{% endif %}"
-                    >
-                        Timer
-                    </button>
-                </form>
-
-                <div id="timer-display" class="timer-display">00:00:00</div>
-
-                {% if state.timer_mode == 'timer' %}
-                <form method="post" action="{{ url_for('timer_preset') }}" class="widget-actions">
-                    <button type="submit" name="minutes" value="10" class="btn btn-secondary">10 min</button>
-                    <button type="submit" name="minutes" value="20" class="btn btn-secondary">20 min</button>
-                    <button type="submit" name="minutes" value="30" class="btn btn-secondary">30 min</button>
-                </form>
-                <form method="post" action="{{ url_for('timer_custom') }}" class="widget-actions">
-                    <label for="custom_minutes">Custom (min):</label>
-                    <input
-                        id="custom_minutes"
-                        name="custom_minutes"
-                        type="number"
-                        min="1"
-                        max="240"
-                        step="1"
-                        inputmode="numeric"
-                    />
-                    <button type="submit" class="btn">Set</button>
-                </form>
-                {% endif %}
-
-                <div class="widget-actions">
-                    <form method="post" action="{{ url_for('timer_start') }}">
-                        <button type="submit" class="btn btn-secondary">Start</button>
-                    </form>
-                    <form method="post" action="{{ url_for('timer_stop') }}">
-                        <button type="submit" class="btn btn-secondary">Stop</button>
-                    </form>
-                    <form method="post" action="{{ url_for('timer_reset') }}">
-                        <button type="submit" class="btn btn-secondary">Reset</button>
-                    </form>
+                    <!-- MQTT -->
+                    <div class="widget widget-mqtt">
+                        <h2>Home Assistant MQTT</h2>
+                        <p>Status: <strong id="mqtt-status">{{ 'Connected' if state.mqtt_connected else 'Disconnected' }}</strong></p>
+                        <p class="widget-note">Broker: <strong>{{ state.mqtt_broker or 'Not set' }}</strong>:<strong>{{ state.mqtt_port }}</strong></p>
+                        <p class="widget-note">Enabled: <strong>{{ 'Yes' if state.mqtt_enabled else 'No' }}</strong></p>
+                        <button type="button" class="btn btn-primary" data-open-modal="mqtt-modal">Edit Home Assistant Setup</button>
+                    </div>
                 </div>
 
-                <p class="widget-note">
-                    Mode: {{ state.timer_mode|capitalize }}
-                    {% if state.timer_mode == 'timer' and state.timer_duration %}
-                        ({{ (state.timer_duration // 60)|int }} min preset)
-                    {% endif %}
-                </p>
-            </section>
+                <div id="thermometer-modal" class="modal-overlay" aria-hidden="true">
+                    <div class="modal-card">
+                        <div class="modal-header">
+                            <h3>Thermometer Setup</h3>
+                            <button type="button" class="modal-close" data-close-modal="thermometer-modal" aria-label="Close thermometer setup">&times;</button>
+                        </div>
+                        <form method="post" action="{{ url_for('thermometer_config') }}" class="setpoint-form modal-form">
+                            <label for="thermometer_mode">Mode:</label>
+                            <select id="thermometer_mode" name="thermometer_mode">
+                                <option value="single" {% if state.thermometer_mode == 'single' %}selected{% endif %}>Single</option>
+                                <option value="dual" {% if state.thermometer_mode == 'dual' %}selected{% endif %}>Dual</option>
+                            </select>
 
-            <!-- Schedule widget -->
-            <section class="widget widget-schedule">
-                <h2>Schedule</h2>
-                <p class="widget-note">Pick a future time (up to ~48 hours) when you want the sauna hot.</p>
-                <form method="post" action="{{ url_for('set_schedule') }}" class="schedule-form">
-                    <label for="schedule_time">Start Time:</label>
-                    <input type="datetime-local" id="schedule_time" name="schedule_time" />
-                    <button type="submit" class="btn">Save Schedule</button>
-                </form>
-                {% if state.scheduled_start_at %}
-                <p class="widget-note">A one-shot schedule is active.</p>
-                {% endif %}
-            </section>
+                            <label for="goal_sensor_type">Goal Sensor:</label>
+                            <select id="goal_sensor_type" name="goal_sensor_type">
+                                <option value="ds18b20" {% if state.goal_sensor_type == 'ds18b20' %}selected{% endif %}>DS18B20</option>
+                                <option value="thermocouple" {% if state.goal_sensor_type == 'thermocouple' %}selected{% endif %}>Thermocouple</option>
+                            </select>
 
-            <!-- Past sessions widget (UI placeholder) -->
-            <section class="widget widget-sessions">
-                <h2>Past Sessions</h2>
-                <p class="widget-note">(Session history will appear here)</p>
-                <ul class="session-list">
-                    <li>No sessions recorded yet.</li>
-                </ul>
-                <a href="{{ url_for('index') }}sessions" class="widget-link" hidden>View details</a>
-            </section>
+                            <label for="limit_sensor_type">Limit Sensor:</label>
+                            <select id="limit_sensor_type" name="limit_sensor_type">
+                                <option value="ds18b20" {% if state.limit_sensor_type == 'ds18b20' %}selected{% endif %}>DS18B20</option>
+                                <option value="thermocouple" {% if state.limit_sensor_type == 'thermocouple' %}selected{% endif %}>Thermocouple</option>
+                            </select>
 
-            <!-- Settings widget -->
-            <section class="widget widget-settings">
-                <h2>Settings</h2>
-                <p><strong>Units:</strong>
-                    {{ 'Fahrenheit' if state.use_imperial else 'Celsius' }}
-                    (<span>{{ state.unit }}</span>)
-                </p>
-                <form method="post" action="{{ url_for('toggle_units') }}" class="inline-form">
-                    <button type="submit" class="btn btn-secondary">
-                        Switch to {{ 'Metric (°C)' if state.use_imperial else 'Imperial (°F)' }}
-                    </button>
-                </form>
+                            <label for="bench_sensor_id">Goal ID:</label>
+                            <input id="bench_sensor_id" name="bench_sensor_id" value="{{ state.bench_sensor_id if state.bench_sensor_id else '' }}" placeholder="28-..." />
 
-                <hr />
-                <h3>Electricity Cost</h3>
-                <form method="post" action="{{ url_for('cost_config') }}" class="setpoint-form">
-                    <label for="price_per_kwh">Price per kWh:</label>
-                    <input
-                        type="number"
-                        step="0.0001"
-                        id="price_per_kwh"
-                        name="price_per_kwh"
-                        value="{{ state.price_per_kwh if state.price_per_kwh is not none else '' }}"
-                    />
-                    <label for="heater_power_kw">Heater Power (kW):</label>
-                    <input
-                        type="number"
-                        step="0.1"
-                        id="heater_power_kw"
-                        name="heater_power_kw"
-                        value="{{ state.heater_power_kw if state.heater_power_kw is not none else '' }}"
-                    />
-                    <button type="submit" class="btn">Save Cost Settings</button>
-                </form>
+                            <label for="ceiling_sensor_id">Limit ID:</label>
+                            <input id="ceiling_sensor_id" name="ceiling_sensor_id" value="{{ state.ceiling_sensor_id if state.ceiling_sensor_id else '' }}" placeholder="28-..." />
 
-                {% if state.estimated_cost_current_session is defined %}
-                <p class="widget-note">
-                    Estimated cost this session (so far):
-                    <strong>{{ state.estimated_cost_current_session }}</strong>
-                </p>
-                {% endif %}
+                            <label for="goal_spi_cs">Goal CS Pin:</label>
+                            <input type="number" id="goal_spi_cs" name="goal_spi_cs" value="{{ state.goal_spi_cs }}" min="0" max="27" />
+
+                            <label for="limit_spi_cs">Limit CS Pin:</label>
+                            <input type="number" id="limit_spi_cs" name="limit_spi_cs" value="{{ state.limit_spi_cs }}" min="0" max="27" />
+
+                            <div class="modal-actions">
+                                <button type="submit" class="btn btn-primary">Save</button>
+                                <button type="button" class="btn btn-secondary" data-close-modal="thermometer-modal">Cancel</button>
+                            </div>
+                        </form>
+
+                        {% if state.detected_sensors and state.detected_sensors|length > 0 %}
+                        <p class="widget-note"><strong>Found:</strong></p>
+                        <ul class="sensor-list">
+                            {% for sid in state.detected_sensors %}
+                            <li>{{ sid }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div id="mqtt-modal" class="modal-overlay" aria-hidden="true">
+                    <div class="modal-card">
+                        <div class="modal-header">
+                            <h3>Home Assistant MQTT</h3>
+                            <button type="button" class="modal-close" data-close-modal="mqtt-modal" aria-label="Close mqtt setup">&times;</button>
+                        </div>
+                        <form method="post" action="{{ url_for('mqtt_config') }}" class="setpoint-form modal-form">
+                            <label>
+                                <input type="checkbox" name="mqtt_enabled" {% if state.mqtt_enabled %}checked{% endif %} />
+                                Enable MQTT
+                            </label>
+
+                            <label for="mqtt_broker">Broker:</label>
+                            <input id="mqtt_broker" name="mqtt_broker" value="{{ state.mqtt_broker or '' }}" placeholder="192.168.1.100" />
+
+                            <label for="mqtt_port">Port:</label>
+                            <input type="number" id="mqtt_port" name="mqtt_port" value="{{ state.mqtt_port }}" min="1" max="65535" />
+
+                            <label for="mqtt_username">Username:</label>
+                            <input id="mqtt_username" name="mqtt_username" value="{{ state.mqtt_username or '' }}" />
+
+                            <label for="mqtt_password">Password:</label>
+                            <input type="password" id="mqtt_password" name="mqtt_password" />
+
+                            <div class="modal-actions">
+                                <button type="submit" class="btn btn-primary">Save</button>
+                                <button type="button" class="btn btn-secondary" data-close-modal="mqtt-modal">Cancel</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
             </section>
         </div>
 
-        <footer>
-            <p>Access this page from your phone or via the local touchscreen.</p>
-        </footer>
+        <!-- TAB NAVIGATION (BOTTOM) -->
+        <nav class="tab-nav">
+            <button class="tab-btn active" data-tab-btn="dashboard" onclick="window.switchTab('dashboard', this)">Dashboard</button>
+            <button class="tab-btn" data-tab-btn="tools" onclick="window.switchTab('tools', this)">Tools</button>
+            <button class="tab-btn" data-tab-btn="settings" onclick="window.switchTab('settings', this)">Settings</button>
+        </nav>
     </div>
 </body>
 </html>

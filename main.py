@@ -72,10 +72,69 @@ def heater_confirm_continue():
     Clears confirmation/lockout flags and allows the control loop to
     continue operating towards the desired setpoint.
     """
-    # Re-enable heater and clear confirmation flags via the controller API.
-    # For now we simply re-enable; controller will handle ensuring safety
-    # limits (max temperature, further runtime checks) remain in effect.
-    controller.set_heater_enabled(True)
+    controller.confirm_continue()
+    return redirect(url_for("index"))
+
+
+@app.route("/limit_setpoint", methods=["POST"])
+def update_limit_setpoint():
+    """Update the limit-sensor temperature cutoff used in dual mode."""
+    try:
+        limit_temp = float(request.form.get("limit_temp"))
+    except (TypeError, ValueError):
+        return redirect(url_for("index"))
+
+    controller.set_limit_temp(limit_temp)
+    return redirect(url_for("index"))
+
+
+@app.route("/thermometer/config", methods=["POST"])
+def thermometer_config():
+    """Update thermometer mode, sensor type, and per-sensor identifiers."""
+    mode = request.form.get("thermometer_mode", "single")
+    goal_sensor_type = request.form.get("goal_sensor_type", "ds18b20")
+    limit_sensor_type = request.form.get("limit_sensor_type", "ds18b20")
+
+    controller.set_thermometer_mode(mode)
+    controller.set_goal_sensor_type(goal_sensor_type)
+    controller.set_limit_sensor_type(limit_sensor_type)
+
+    # DS18B20 mapping
+    bench_sensor_id = request.form.get("bench_sensor_id")
+    ceiling_sensor_id = request.form.get("ceiling_sensor_id")
+    controller.set_sensor_ids(bench_sensor_id, ceiling_sensor_id)
+
+    # Thermocouple SPI CS mapping
+    try:
+        goal_spi_cs = int(request.form.get("goal_spi_cs", "8"))
+        limit_spi_cs = int(request.form.get("limit_spi_cs", "7"))
+        controller.set_spi_pins(goal_spi_cs, limit_spi_cs)
+    except (TypeError, ValueError):
+        pass
+
+    return redirect(url_for("index"))
+
+
+@app.route("/mqtt/config", methods=["POST"])
+def mqtt_config():
+    """Update Home Assistant MQTT integration settings."""
+    enabled = request.form.get("mqtt_enabled") == "on"
+    broker = (request.form.get("mqtt_broker") or "").strip()
+    username = (request.form.get("mqtt_username") or "").strip()
+    password = request.form.get("mqtt_password") or ""
+
+    try:
+        port = int(request.form.get("mqtt_port", "1883"))
+    except (TypeError, ValueError):
+        port = 1883
+
+    controller.set_mqtt_config(
+        enabled=enabled,
+        broker=broker,
+        port=port,
+        username=username,
+        password=password,
+    )
     return redirect(url_for("index"))
 
 

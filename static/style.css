@@ -81,6 +81,9 @@ p {
 }
 
 .setpoint-form input[type="number"],
+.setpoint-form input[type="text"],
+.setpoint-form input[type="password"],
+.setpoint-form select,
 .schedule-form input[type="datetime-local"] {
     padding: 0.4rem 0.5rem;
     border-radius: 4px;
@@ -147,6 +150,10 @@ p {
     background: #374151;
 }
 
+.btn-secondary.active {
+    background: #2563eb;
+}
+
 .temp-reading {
     display: flex;
     align-items: baseline;
@@ -187,83 +194,443 @@ p {
     font-size: 0.9rem;
 }
 
+.warning {
+    padding: 0.4rem 0.6rem;
+    border-radius: 4px;
+    background: rgba(220, 38, 38, 0.15);
+    border: 1px solid rgba(220, 38, 38, 0.6);
+    font-size: 0.85rem;
+}
+
 footer {
     text-align: center;
     font-size: 0.8rem;
     color: rgba(255, 255, 255, 0.6);
 }
 
-.warning {
-    margin-top: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: 4px;
-    background: rgba(220, 38, 38, 0.15);
-    border: 1px solid rgba(220, 38, 38, 0.6);
+/* ========== KIOSK LAYOUT — 1024×600 ========== */
+
+body.kiosk-layout {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    height: 100vh;
 }
 
-.confirmation {
-    margin-top: 0.75rem;
-    padding: 0.75rem 1rem;
-    border-radius: 4px;
-    background: rgba(37, 99, 235, 0.15);
-    border: 1px solid rgba(37, 99, 235, 0.6);
+.kiosk-container {
+    display: flex;
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    max-width: 1024px;
+    margin: 0 auto;
+    overflow: hidden;
 }
 
-/* Heater toggle switch */
+/* Tab content fills all space above the fixed nav bar */
+.tab-content-wrapper {
+    flex: 1;
+    overflow: hidden;           /* each tab handles its own scroll */
+    padding: 0.5rem;
+    box-sizing: border-box;
+}
+
+.tab-content {
+    display: none;
+    width: 100%;
+    height: 100%;
+}
+
+.tab-content.active {
+    display: flex;
+    flex-direction: column;
+}
+
+/* ---- Tab Navigation (Bottom) ---- */
+.tab-nav {
+    position: fixed;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: 1024px;
+    display: flex;
+    background: #111c2b;
+    border-top: 2px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    height: 52px;
+}
+
+.tab-btn {
+    flex: 1;
+    appearance: none;
+    border: none;
+    background: #1a2635;
+    color: #a8b5c7;
+    padding: 0 1rem;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease;
+    border-radius: 0;
+    height: 100%;
+}
+
+.tab-btn:active,
+.tab-btn:focus {
+    outline: none;
+}
+
+.tab-btn.active {
+    background: #2563eb;
+    color: #ffffff;
+    border-top: 3px solid #60a5fa;
+}
+
+/* ---- Dashboard — 2×2 grid that exactly fills the viewport ---- */
+/* Available height = 100vh − tab bar (52px) − wrapper padding (0.5rem × 2 ≈ 16px) */
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 0.5rem;
+    width: 100%;
+    height: calc(100vh - 52px - 1rem);
+    overflow: hidden;
+}
+
+/* ---- Tools — 2 columns, single row, same viewport fill ---- */
+.tools-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr;
+    gap: 0.5rem;
+    width: 100%;
+    height: calc(100vh - 52px - 1rem);
+    overflow: hidden;
+}
+
+/* ---- Settings — 3 columns side-by-side, full height ---- */
+.settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr;
+    gap: 0.5rem;
+    width: 100%;
+    height: calc(100vh - 52px - 1rem);
+    overflow: hidden;
+}
+
+/* Each widget fills its grid cell and scrolls internally if needed */
+.dashboard-grid > .widget,
+.tools-grid > .widget,
+.settings-grid > .widget {
+    overflow-y: auto;
+    min-height: 0;
+    min-width: 0;
+}
+
+/* ---- Widget chrome ---- */
+.dashboard-grid > .widget,
+.tools-grid > .widget,
+.settings-grid > .widget {
+    padding: 0.6rem 0.8rem;
+}
+
+.dashboard-grid h2,
+.tools-grid h2,
+.settings-grid h2 {
+    margin: 0 0 0.4rem;
+    font-size: 1rem;
+    padding-bottom: 0.3rem;
+}
+
+/* ---- Large temperature display ---- */
+.temp-reading-large {
+    display: flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    margin: 0.4rem 0;
+}
+
+.temp-value-large {
+    font-size: 3.5rem;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.temp-unit-large {
+    font-size: 1.8rem;
+    opacity: 0.8;
+}
+
+.temp-secondary {
+    font-size: 0.85rem;
+    opacity: 0.8;
+    margin: 0.3rem 0 0;
+}
+
+.current-setpoint {
+    font-size: 1.6rem;
+    font-weight: 600;
+    margin: 0.25rem 0 0.6rem;
+}
+
+/* ---- Toggle switch ---- */
 .toggle-switch {
     position: relative;
     display: inline-block;
-    width: 52px;
-    height: 28px;
-    margin-right: 0.5rem;
+    width: 80px;
+    height: 40px;
+}
+
+.toggle-switch.toggle-large {
+    width: 100px;
+    height: 50px;
 }
 
 .toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
+    display: none;
 }
 
 .slider {
     position: absolute;
     cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    top: 0; left: 0; right: 0; bottom: 0;
     background-color: #4b5563;
-    transition: 0.2s;
     border-radius: 999px;
-}
-
-.slider:before {
-    position: absolute;
-    content: "";
-    height: 22px;
-    width: 22px;
-    left: 3px;
-    bottom: 3px;
-    background-color: white;
-    transition: 0.2s;
-    border-radius: 50%;
+    transition: 0.3s;
 }
 
 .toggle-switch input:checked + .slider {
     background-color: #16a34a;
 }
 
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 30px;
+    width: 30px;
+    left: 4px;
+    bottom: 5px;
+    background-color: white;
+    border-radius: 50%;
+    transition: 0.3s;
+}
+
+.toggle-switch.toggle-large .slider:before {
+    height: 40px;
+    width: 40px;
+    left: 5px;
+    bottom: 5px;
+}
+
 .toggle-switch input:checked + .slider:before {
-    transform: translateX(24px);
+    transform: translateX(40px);
+}
+
+.toggle-switch.toggle-large input:checked + .slider:before {
+    transform: translateX(50px);
 }
 
 .toggle-label {
+    display: block;
+    margin-top: 0.4rem;
+    font-weight: 500;
     font-size: 0.9rem;
-    opacity: 0.9;
-    align-self: flex-start;
 }
 
-@media (min-width: 768px) {
-    .container {
-        max-width: 960px;
-    }
+/* ---- Timer display ---- */
+.timer-display {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 2.2rem;
+    font-weight: 700;
+    text-align: center;
+    margin: 0.4rem 0;
+    padding: 0.5rem;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 6px;
+}
+
+.timer-controls {
+    display: flex;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+}
+
+.timer-presets {
+    display: flex;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+}
+
+.timer-presets .btn {
+    flex: 1;
+}
+
+.timer-actions {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.timer-actions form {
+    flex: 1;
+}
+
+.timer-actions .btn {
+    width: 100%;
+}
+
+/* ---- Buttons ---- */
+.btn-sm {
+    padding: 0.4rem 0.6rem;
+    font-size: 0.88rem;
+}
+
+.btn-primary {
+    background: #2563eb;
+}
+
+.btn-primary:hover {
+    background: #1d4ed8;
+}
+
+/* ---- Form fields in kiosk grids ---- */
+.setpoint-form input,
+.schedule-form input,
+.setpoint-form select {
+    padding: 0.45rem 0.5rem;
+    font-size: 0.95rem;
+    margin-bottom: 0.5rem;
+}
+
+.setpoint-form button,
+.schedule-form button {
+    margin-top: 0.25rem;
+}
+
+/* ---- Confirmation dialog ---- */
+.confirmation {
+    background: rgba(168, 85, 247, 0.1);
+    border: 2px solid #a855f7;
+    padding: 0.6rem 0.8rem;
+    border-radius: 4px;
+    margin: 0.5rem 0;
+}
+
+.confirmation p {
+    margin: 0.2rem 0;
+}
+
+.confirmation button {
+    margin-top: 0.5rem;
+}
+
+/* ---- Sensor list ---- */
+.sensor-list {
+    list-style: none;
+    padding-left: 0;
+    margin: 0.4rem 0;
+    font-size: 0.85rem;
+}
+
+.sensor-list li {
+    background: rgba(37, 99, 235, 0.1);
+    padding: 0.35rem 0.5rem;
+    margin-bottom: 0.2rem;
+    border-radius: 4px;
+    font-family: monospace;
+}
+
+/* ---- Scrollbar ---- */
+.dashboard-grid > .widget::-webkit-scrollbar,
+.tools-grid > .widget::-webkit-scrollbar,
+.settings-grid > .widget::-webkit-scrollbar {
+    width: 6px;
+}
+
+.dashboard-grid > .widget::-webkit-scrollbar-track,
+.tools-grid > .widget::-webkit-scrollbar-track,
+.settings-grid > .widget::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.dashboard-grid > .widget::-webkit-scrollbar-thumb,
+.tools-grid > .widget::-webkit-scrollbar-thumb,
+.settings-grid > .widget::-webkit-scrollbar-thumb {
+    background: #4b5563;
+    border-radius: 3px;
+}
+
+body.modal-open {
+    overflow: hidden;
+}
+
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0.75rem;
+    background: rgba(2, 6, 23, 0.78);
+    z-index: 1300;
+}
+
+.modal-overlay.active {
+    display: flex;
+}
+
+.modal-card {
+    width: min(760px, 100%);
+    max-height: calc(100vh - 1.5rem);
+    overflow-y: auto;
+    background: #111c2b;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 10px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+    padding: 0.8rem 0.9rem;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.6rem;
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.modal-close {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: #e2e8f0;
+    font-size: 1.6rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.25rem;
+}
+
+.modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 0.35rem;
+}
+
+.widget-thermometer-config .btn,
+.widget-mqtt .btn {
+    margin-top: 0.35rem;
+    width: 100%;
 }

@@ -1,16 +1,32 @@
 """Background logic for the smart sauna controller.
 
 Responsibilities:
-- Read temperature from DS18B20 (with mock fallback for PC)
-- Control a GPIO relay driving the sauna heater (active-LOW)
-- Maintain shared state (current temp, desired temp, on/off status, timings)
-- Persist configuration/state (desired setpoint and heater enabled flag) to JSON
-- Run a background control loop with simple bang-bang hysteresis control
+- Read temperature from DS18B20 1-Wire sensors or MAX31855 thermocouple sensors
+- Control a GPIO relay driving the sauna heater
+- Maintain shared state (temps, setpoints, on/off status, timings)
+- Persist configuration to JSON
+- Run a background bang-bang hysteresis control loop
+- Optional Home Assistant integration via MQTT auto-discovery
 
-This module is written so it can run both on a Raspberry Pi 4 and on a
-regular PC for development:
-- On Pi: uses RPi.GPIO and 1-Wire device files under /sys/bus/w1/devices
-- On PC: falls back to mock GPIO and a fake temperature that slowly changes
+Thermometer Modes
+-----------------
+single  One sensor at any standard placement. The 100 C physical thermal
+        switch provides hardware safety. The software adds a MAX_TEMP_C lockout.
+
+dual    Two sensors. The "goal" sensor (bench height) drives the setpoint.
+        The "limit" sensor (ceiling or heater area) enforces a user-configurable
+        upper cutoff. Example: heat until bench = 82 C (180 F) but shut the
+        heater off any time the ceiling sensor reads >= 93 C (200 F).
+
+Sensor Types
+------------
+ds18b20       1-Wire DS18B20 digital thermometer (default, recommended).
+              Stainless-steel-tipped probes are available for high-heat use.
+thermocouple  MAX31855 K-type thermocouple via SPI. Use when coating
+              off-gassing is a concern and a high-heat-rated probe is required.
+
+This module runs on Raspberry Pi (real GPIO + real sensors) and on a standard
+PC for development (mock GPIO + synthetic temperature values).
 """
 
 from __future__ import annotations
@@ -19,64 +35,65 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "sauna_state.json")
 
-# GPIO pin numbers (BCM mode)
-TEMP_SENSOR_GPIO = 4  # DS18B20 uses 1-Wire on GPIO4 (handled by kernel)
-RELAY_GPIO = 17       # Relay control pin (active-LOW)
+# GPIO pin (BCM numbering)
+RELAY_GPIO = 17
 
-HYSTERESIS = 2.5  # degrees C
-MAX_TEMP_C = 90.0  # safety limit (~194°F), below 100°C high-limit switch
-MAX_ON_TIME_SEC = 2 * 60 * 60  # 2 hours continuous ON time
-CONFIRMATION_TIMEOUT_SEC = 90  # time window to confirm extending runtime
-CONTROL_INTERVAL_SEC = 2.0  # control loop period
+# Control constants
+HYSTERESIS = 2.5
+MAX_TEMP_C = 105.0
+MAX_ON_TIME_SEC = 2 * 60 * 60
+CONFIRMATION_TIMEOUT_SEC = 90
+CONTROL_INTERVAL_SEC = 2.0
+MQTT_PUBLISH_INTERVAL_SEC = 5.0
+
+DEFAULT_DESIRED_TEMP_C = 70.0
+DEFAULT_LIMIT_TEMP_C = 93.3
 
 
-# --- GPIO Abstraction -------------------------------------------------------
+# -- GPIO ---------------------------------------------------------------------
 
 class BaseGPIO:
-    """Minimal GPIO abstraction so we can swap real vs mock implementation."""
-
     BCM = "BCM"
     OUT = "OUT"
 
-    def setmode(self, mode):  # pragma: no cover - simple pass-through
+    def setmode(self, mode):
         pass
 
-    def setup(self, pin, mode):  # pragma: no cover - simple pass-through
+    def setup(self, pin, mode):
         pass
 
-    def output(self, pin, value):  # pragma: no cover - simple pass-through
+    def output(self, pin, value):
         pass
 
-    def cleanup(self):  # pragma: no cover - simple pass-through
+    def cleanup(self):
         pass
 
 
 class MockGPIO(BaseGPIO):
-    """In-memory mock of GPIO for development on non-Pi machines."""
+    """In-memory GPIO mock for development on non-Pi hardware."""
 
     def __init__(self):
-        self.state = {}
+        self.state: dict[int, bool] = {}
 
     def setmode(self, mode):
-        # No-op for mock
         self.mode = mode
 
     def setup(self, pin, mode):
-        self.state[pin] = True  # default relay off (inactive, HIGH)
+        self.state[pin] = False
 
     def output(self, pin, value):
-        self.state[pin] = value
+        self.state[pin] = bool(value)
 
     def cleanup(self):
         self.state.clear()
 
 
-try:  # Try to import real GPIO; fall back to mock on error
+try:
     import RPi.GPIO as RPiGPIO  # type: ignore
 
     class RealGPIO(BaseGPIO):
@@ -98,23 +115,53 @@ try:  # Try to import real GPIO; fall back to mock on error
             self.gpio.cleanup()
 
     GPIO: BaseGPIO = RealGPIO()
-except Exception:  # pragma: no cover - executed only off-Pi
+except Exception:
     GPIO = MockGPIO()
 
 
-# --- Temperature Reading ----------------------------------------------------
+# -- Thermocouple (MAX31855) --------------------------------------------------
 
+try:
+    import adafruit_max31855  # type: ignore
+    import board  # type: ignore
+    import busio  # type: ignore
+    import digitalio  # type: ignore
+
+    _THERMO_AVAILABLE = True
+except ImportError:
+    _THERMO_AVAILABLE = False
+
+_thermo_locks: dict[int, threading.Lock] = {}
+_thermo_sensors: dict[int, object] = {}
+
+
+def _read_thermocouple(cs_gpio_pin: int) -> Optional[float]:
+    """Read C from MAX31855 at the given CS pin. Returns None on error."""
+    if not _THERMO_AVAILABLE:
+        return None
+    if cs_gpio_pin not in _thermo_locks:
+        _thermo_locks[cs_gpio_pin] = threading.Lock()
+
+    with _thermo_locks[cs_gpio_pin]:
+        try:
+            if cs_gpio_pin not in _thermo_sensors:
+                cs = digitalio.DigitalInOut(getattr(board, f"D{cs_gpio_pin}"))
+                spi = busio.SPI(board.SCK, MOSI=board.MOSI, MISO=board.MISO)
+                _thermo_sensors[cs_gpio_pin] = adafruit_max31855.MAX31855(spi, cs)
+            return float(_thermo_sensors[cs_gpio_pin].temperature)
+        except Exception:
+            _thermo_sensors.pop(cs_gpio_pin, None)
+            return None
+
+
+# -- DS18B20 (1-Wire) ---------------------------------------------------------
 
 def _find_all_w1_devices() -> dict[str, str]:
-    """Locate all DS18B20 sensors and return a map of sensor_id -> device_path.
-
-    Returns dict like {'28-0000012345ab': '/sys/bus/w1/devices/28-0000012345ab/w1_slave', ...}
-    """
     base_dir = "/sys/bus/w1/devices"
     if not os.path.isdir(base_dir):
         return {}
 
-    devices = {}
+    devices: dict[str, str] = {}
     for name in os.listdir(base_dir):
         if name.startswith("28-"):
             device_file = os.path.join(base_dir, name, "w1_slave")
@@ -126,107 +173,273 @@ def _find_all_w1_devices() -> dict[str, str]:
 W1_DEVICES = _find_all_w1_devices()
 
 
-def _read_sensor(device_path: str) -> Optional[float]:
-    """Read temperature from a specific DS18B20 device file.
-
-    Returns temp in Celsius or None on error.
-    """
+def _read_ds18b20(device_path: str) -> Optional[float]:
     try:
-        with open(device_path, "r") as f:
-            lines = f.readlines()
-        # Example lines:
-        #  f3 01 4b 46 7f ff 0c 10 5e : crc=5e YES
-        #  f3 01 4b 46 7f ff 0c 10 5e t=31062
+        with open(device_path, "r", encoding="utf-8") as file:
+            lines = file.readlines()
         if len(lines) >= 2 and "YES" in lines[0] and "t=" in lines[1]:
-            temp_str = lines[1].split("t=")[-1].strip()
-            temp_c = float(temp_str) / 1000.0
-            return temp_c
+            return float(lines[1].split("t=")[-1].strip()) / 1000.0
     except Exception:
         pass
     return None
 
 
-def read_temps(bench_sensor_id: Optional[str] = None, ceiling_sensor_id: Optional[str] = None) -> tuple[float, Optional[float]]:
-    """Read temperatures from DS18B20 sensors if available.
+def _read_sensor(
+    sensor_type: str,
+    sensor_id: Optional[str],
+    spi_cs_pin: int,
+    use_first_w1_fallback: bool = False,
+) -> Optional[float]:
+    if sensor_type == "thermocouple":
+        return _read_thermocouple(spi_cs_pin)
 
-    Returns (bench_temp, ceiling_temp) in Celsius.
-    - bench_temp: primary sensor for user control.
-    - ceiling_temp: safety sensor near ceiling.
-
-    If sensor IDs are provided and match detected sensors, reads from those specific sensors.
-    On a development PC, returns synthetic values.
-    """
     if W1_DEVICES:
-        # Real sensor mode - use configured IDs if available
-        bench_temp = None
-        ceiling_temp = None
-
-        if bench_sensor_id and bench_sensor_id in W1_DEVICES:
-            bench_temp = _read_sensor(W1_DEVICES[bench_sensor_id])
-        
-        if ceiling_sensor_id and ceiling_sensor_id in W1_DEVICES:
-            ceiling_temp = _read_sensor(W1_DEVICES[ceiling_sensor_id])
-
-        # If no configured IDs or they don't match, fall back to first sensor for bench
-        if bench_temp is None:
-            first_id = list(W1_DEVICES.keys())[0]
-            bench_temp = _read_sensor(W1_DEVICES[first_id])
-
-        if bench_temp is not None:
-            return (bench_temp, ceiling_temp)
-
-    # Mock mode: simple synthetic wave between 20 and 80 degrees for bench,
-    # ceiling slightly hotter
-    t = time.time()
-    base = 50.0
-    amplitude = 30.0
-    import math
-
-    bench_mock = base + amplitude * math.sin(t / 120.0)
-    ceiling_mock = bench_mock + 5.0  # ceiling always ~5°C hotter in mock
-    return (bench_mock, ceiling_mock)
+        if sensor_id and sensor_id in W1_DEVICES:
+            return _read_ds18b20(W1_DEVICES[sensor_id])
+        if use_first_w1_fallback:
+            return _read_ds18b20(next(iter(W1_DEVICES.values())))
+    return None
 
 
-# --- Shared State -----------------------------------------------------------
+_mock_state = {"goal_temp": 45.0, "limit_temp": 50.0}
 
+def _mock_temps(heater_on: bool) -> tuple[float, float]:
+    """Simulate temperature rise when heater is ON, fall when OFF."""
+    if heater_on:
+        _mock_state["goal_temp"] += 0.5
+        _mock_state["limit_temp"] += 0.3
+    else:
+        _mock_state["goal_temp"] -= 0.3
+        _mock_state["limit_temp"] -= 0.2
+    _mock_state["goal_temp"] = max(20.0, min(100.0, _mock_state["goal_temp"]))
+    _mock_state["limit_temp"] = max(25.0, min(105.0, _mock_state["limit_temp"]))
+    return _mock_state["goal_temp"], _mock_state["limit_temp"]
+
+
+# -- Shared state -------------------------------------------------------------
 
 @dataclass
 class SaunaState:
-    current_temp: float = 0.0  # Bench-level temp (primary)
-    ceiling_temp: Optional[float] = None  # Ceiling-level temp (safety)
-    desired_temp: float = 70.0  # Default desired temperature in C
-    heater_enabled: bool = False  # User has explicitly allowed heater operation
-    heater_on: bool = False  # Actual relay state (True means heater energized)
-    heater_on_since: Optional[float] = None  # epoch seconds
-    time_to_setpoint: Optional[float] = None  # seconds from heater_on_since
+    # Live sensor readings
+    current_temp: float = 0.0
+    limit_sensor_temp: Optional[float] = None
 
-    last_updated: Optional[float] = None  # epoch seconds
-    use_imperial: bool = True  # Display temperatures in Fahrenheit by default
-    lockout_active: bool = False  # True when max-on-time lockout is in effect
-    lockout_reason: Optional[str] = None  # e.g. "max_on_time"
-    confirmation_required: bool = False  # waiting for user to confirm continuation
-    confirmation_deadline: Optional[float] = None  # epoch seconds
+    # Setpoints in C
+    desired_temp: float = DEFAULT_DESIRED_TEMP_C
+    limit_temp: float = DEFAULT_LIMIT_TEMP_C
 
-    # Simple one-shot schedule: UTC timestamp (epoch seconds) when we want sauna hot
+    # Heater state
+    heater_enabled: bool = False
+    heater_on: bool = False
+    heater_on_since: Optional[float] = None
+    time_to_setpoint: Optional[float] = None
+
+    # Safety
+    lockout_active: bool = False
+    lockout_reason: Optional[str] = None
+    confirmation_required: bool = False
+    confirmation_deadline: Optional[float] = None
+
+    # Display
+    use_imperial: bool = True
+    last_updated: Optional[float] = None
+
+    # Scheduling
     scheduled_start_at: Optional[float] = None
-    # Measured average heat-up rate in deg C per second (for scheduling)
     avg_heatup_rate_c_per_sec: Optional[float] = None
 
-    # Simple energy/cost tracking configuration
-    price_per_kwh: Optional[float] = None  # in user currency
-    heater_power_kw: Optional[float] = None  # e.g. 6.0 for 6 kW heater
+    # Cost tracking
+    price_per_kwh: Optional[float] = None
+    heater_power_kw: Optional[float] = None
 
-    # Simple timer/stopwatch state (UI only for now)
-    timer_mode: str = "stopwatch"  # "stopwatch" or "timer"
+    # Timer / stopwatch
+    timer_mode: str = "stopwatch"
     timer_running: bool = False
-    timer_start_ts: Optional[float] = None  # epoch seconds when started
-    timer_elapsed: float = 0.0  # accumulated seconds
-    timer_duration: Optional[float] = None  # for timer mode, total seconds
+    timer_start_ts: Optional[float] = None
+    timer_elapsed: float = 0.0
+    timer_duration: Optional[float] = None
 
-    # Sensor ID configuration (DS18B20 unique IDs)
-    bench_sensor_id: Optional[str] = None  # e.g. "28-0000012345ab"
-    ceiling_sensor_id: Optional[str] = None  # e.g. "28-0000067890cd"
+    # Thermometer configuration
+    thermometer_mode: str = "single"
+    sensor_type: str = "ds18b20"
+    goal_sensor_type: str = "ds18b20"
+    limit_sensor_type: str = "ds18b20"
+    bench_sensor_id: Optional[str] = None
+    ceiling_sensor_id: Optional[str] = None
+    goal_spi_cs: int = 8
+    limit_spi_cs: int = 7
 
+    # MQTT / Home Assistant
+    mqtt_enabled: bool = False
+    mqtt_broker: str = ""
+    mqtt_port: int = 1883
+    mqtt_username: str = ""
+    mqtt_password: str = ""
+
+
+# -- MQTT ---------------------------------------------------------------------
+
+try:
+    import paho.mqtt.client as _paho  # type: ignore
+
+    _MQTT_AVAILABLE = True
+except ImportError:
+    _MQTT_AVAILABLE = False
+
+
+class MQTTPublisher:
+    """MQTT publisher with Home Assistant MQTT discovery support."""
+
+    _ID = "sauna_controller"
+    _STATE_TOPIC = f"{_ID}/state"
+    _AVAIL_TOPIC = f"{_ID}/availability"
+    _CMD_MODE = f"{_ID}/cmd/mode"
+    _CMD_SETPOINT = f"{_ID}/cmd/setpoint"
+    _CMD_LIMIT = f"{_ID}/cmd/limit_temp"
+
+    def __init__(self, controller: "SaunaController") -> None:
+        self._ctrl = controller
+        self._client = None
+        self.connected = False
+
+    def start(self, broker: str, port: int, username: str, password: str) -> None:
+        if not _MQTT_AVAILABLE or not broker:
+            if not _MQTT_AVAILABLE:
+                print("[MQTT] paho-mqtt not installed; MQTT disabled.")
+            return
+        try:
+            self._client = _paho.Client(client_id=self._ID, clean_session=False)
+            if username:
+                self._client.username_pw_set(username, password or "")
+            self._client.will_set(self._AVAIL_TOPIC, "offline", qos=1, retain=True)
+            self._client.on_connect = self._on_connect
+            self._client.on_message = self._on_message
+            self._client.on_disconnect = self._on_disconnect
+            self._client.connect_async(broker, port, keepalive=60)
+            self._client.loop_start()
+        except Exception as exc:
+            print(f"[MQTT] Startup error: {exc}")
+
+    def stop(self) -> None:
+        if self._client:
+            try:
+                self._client.publish(self._AVAIL_TOPIC, "offline", qos=1, retain=True)
+                self._client.loop_stop()
+                self._client.disconnect()
+            except Exception:
+                pass
+        self.connected = False
+
+    def publish_state(self, snap: dict) -> None:
+        if not self._client or not self.connected:
+            return
+        payload = {
+            "current_temp_c": snap.get("current_temp_c"),
+            "setpoint_c": snap.get("desired_temp_c"),
+            "limit_sensor_temp_c": snap.get("limit_sensor_temp_c"),
+            "limit_temp_c": snap.get("limit_temp_c"),
+            "mode": "heat" if snap.get("heater_enabled") else "off",
+            "action": (
+                "heating"
+                if snap.get("heater_on")
+                else "idle"
+                if snap.get("heater_enabled")
+                else "off"
+            ),
+            "thermometer_mode": snap.get("thermometer_mode"),
+        }
+        try:
+            self._client.publish(self._STATE_TOPIC, json.dumps(payload), qos=0, retain=True)
+            self._client.publish(self._AVAIL_TOPIC, "online", qos=1, retain=True)
+        except Exception:
+            pass
+
+    def _on_connect(self, client, userdata, flags, rc) -> None:
+        if rc != 0:
+            self.connected = False
+            print(f"[MQTT] Connect failed rc={rc}")
+            return
+        self.connected = True
+        client.publish(self._AVAIL_TOPIC, "online", qos=1, retain=True)
+        client.subscribe([(self._CMD_MODE, 0), (self._CMD_SETPOINT, 0), (self._CMD_LIMIT, 0)])
+        self._publish_discovery(client)
+
+    def _on_disconnect(self, client, userdata, rc) -> None:
+        self.connected = False
+
+    def _on_message(self, client, userdata, msg) -> None:
+        topic = msg.topic
+        raw = msg.payload.decode("utf-8", errors="replace").strip()
+        if topic == self._CMD_MODE:
+            if raw == "heat":
+                self._ctrl.set_heater_enabled(True)
+            elif raw == "off":
+                self._ctrl.set_heater_enabled(False)
+        elif topic == self._CMD_SETPOINT:
+            try:
+                self._ctrl.set_desired_temperature_c(float(raw))
+            except (TypeError, ValueError):
+                pass
+        elif topic == self._CMD_LIMIT:
+            try:
+                self._ctrl.set_limit_temp_c(float(raw))
+            except (TypeError, ValueError):
+                pass
+
+    def _publish_discovery(self, client) -> None:
+        device = {
+            "identifiers": [self._ID],
+            "name": "Sauna Controller",
+            "model": "Smart Sauna Controller",
+            "manufacturer": "DIY",
+        }
+        climate_cfg = {
+            "name": "Sauna",
+            "unique_id": f"{self._ID}_climate",
+            "device": device,
+            "modes": ["off", "heat"],
+            "current_temperature_topic": self._STATE_TOPIC,
+            "current_temperature_template": "{{ value_json.current_temp_c }}",
+            "temperature_command_topic": self._CMD_SETPOINT,
+            "temperature_state_topic": self._STATE_TOPIC,
+            "temperature_state_template": "{{ value_json.setpoint_c }}",
+            "mode_command_topic": self._CMD_MODE,
+            "mode_state_topic": self._STATE_TOPIC,
+            "mode_state_template": "{{ value_json.mode }}",
+            "action_topic": self._STATE_TOPIC,
+            "action_template": "{{ value_json.action }}",
+            "min_temp": 40,
+            "max_temp": 100,
+            "temp_step": 0.5,
+            "temperature_unit": "C",
+            "availability_topic": self._AVAIL_TOPIC,
+        }
+        limit_sensor_cfg = {
+            "name": "Sauna Limit Sensor",
+            "unique_id": f"{self._ID}_limit_sensor",
+            "device": device,
+            "device_class": "temperature",
+            "state_topic": self._STATE_TOPIC,
+            "value_template": "{{ value_json.limit_sensor_temp_c }}",
+            "unit_of_measurement": "C",
+            "availability_topic": self._AVAIL_TOPIC,
+        }
+
+        client.publish(
+            f"homeassistant/climate/{self._ID}/config",
+            json.dumps(climate_cfg),
+            qos=1,
+            retain=True,
+        )
+        client.publish(
+            f"homeassistant/sensor/{self._ID}_limit/config",
+            json.dumps(limit_sensor_cfg),
+            qos=1,
+            retain=True,
+        )
+
+
+# -- Controller ---------------------------------------------------------------
 
 class SaunaController:
     """Manages background reading and heater control in its own thread."""
@@ -237,208 +450,282 @@ class SaunaController:
         self._state = SaunaState()
         self._load_state_from_disk()
 
-        # Initialize GPIO
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(RELAY_GPIO, GPIO.OUT)
 
-        # Ensure relay and logical state are OFF on startup for safety
+        # Always start safe
         self._state.heater_enabled = False
         self._set_relay(False)
 
-        # Log detected sensors for configuration
         if W1_DEVICES:
             print("\n=== Detected DS18B20 Sensors ===")
-            for sensor_id in W1_DEVICES.keys():
+            for sensor_id in W1_DEVICES:
                 print(f"  {sensor_id}")
-            print("\nTo configure which sensor is bench vs ceiling:")
-            print(f"Edit {self.config_path} and set:")
-            print('  "bench_sensor_id": "28-XXXXXXXXXXXX"')
-            print('  "ceiling_sensor_id": "28-YYYYYYYYYYYY"')
             print("================================\n")
 
-        # Start background control thread (daemon so it won't block process exit)
+        self._mqtt = MQTTPublisher(self)
+        if self._state.mqtt_enabled and self._state.mqtt_broker:
+            self._mqtt.start(
+                self._state.mqtt_broker,
+                self._state.mqtt_port,
+                self._state.mqtt_username,
+                self._state.mqtt_password,
+            )
+
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
 
-    # --- Public API used by web app ----------------------------------------
+    # -- Public API -----------------------------------------------------------
 
     def get_state_snapshot(self) -> dict:
-        """Return a thread-safe snapshot of the current state as a dict.
-
-        Suitable for passing directly to the template.
-        """
         with self._lock:
             state = asdict(self._state)
 
-        # Convert timestamps to friendly durations (seconds -> HH:MM:SS)
         now = time.time()
+        use_imperial = bool(state.get("use_imperial", True))
 
-        heater_on_duration = None
-        if state["heater_on"] and state["heater_on_since"]:
-            heater_on_duration = now - state["heater_on_since"]
+        def to_f(temp_c: float) -> float:
+            return temp_c * 9.0 / 5.0 + 32.0
 
-        time_to_setpoint = state["time_to_setpoint"]
+        def display(temp_c: Optional[float]) -> Optional[float]:
+            if temp_c is None:
+                return None
+            value = to_f(temp_c) if use_imperial else temp_c
+            return round(value, 1)
 
-        def _fmt_duration(seconds: Optional[float]) -> Optional[str]:
+        def fmt_duration(seconds: Optional[float]) -> Optional[str]:
             if seconds is None:
                 return None
-            seconds_int = int(seconds)
-            h, rem = divmod(seconds_int, 3600)
-            m, s = divmod(rem, 60)
-            return f"{h:02d}:{m:02d}:{s:02d}"
+            total = int(seconds)
+            hours, rem = divmod(total, 3600)
+            minutes, sec = divmod(rem, 60)
+            return f"{hours:02d}:{minutes:02d}:{sec:02d}"
 
-        # Convert to display units based on use_imperial flag
-        def _to_f(c: float) -> float:
-            return c * 9.0 / 5.0 + 32.0
+        heater_on_duration = None
+        if state.get("heater_on") and state.get("heater_on_since"):
+            heater_on_duration = now - float(state["heater_on_since"])
 
-        use_imperial = state.get("use_imperial", True)
-
-        if use_imperial:
-            current_display = round(_to_f(state["current_temp"]), 1)
-            desired_display = round(_to_f(state["desired_temp"]), 1)
-            ceiling_display = round(_to_f(state["ceiling_temp"]), 1) if state.get("ceiling_temp") is not None else None
-            unit_label = "F"
-        else:
-            current_display = round(state["current_temp"], 1)
-            desired_display = round(state["desired_temp"], 1)
-            ceiling_display = round(state["ceiling_temp"], 1) if state.get("ceiling_temp") is not None else None
-            unit_label = "C"
-
-        # Compute remaining confirmation time if applicable
         confirmation_remaining = None
         if state.get("confirmation_required") and state.get("confirmation_deadline"):
-            remaining = state["confirmation_deadline"] - now
-            if remaining > 0:
-                confirmation_remaining = int(remaining)
+            remain = float(state["confirmation_deadline"]) - now
+            if remain > 0:
+                confirmation_remaining = int(remain)
 
-        # High-level status for UI: Off / Standby / Heating
-        if not state["heater_enabled"]:
+        if not state.get("heater_enabled"):
             status = "Off"
-        elif state["heater_on"]:
+        elif state.get("heater_on"):
             status = "Heating"
         else:
             status = "Standby"
 
         snapshot = {
-            "current_temp": current_display,
-            "ceiling_temp": ceiling_display,
-            "desired_temp": desired_display,
-            "unit": unit_label,
+            "current_temp_c": round(float(state["current_temp"]), 2),
+            "desired_temp_c": round(float(state["desired_temp"]), 2),
+            "limit_sensor_temp_c": (
+                round(float(state["limit_sensor_temp"]), 2)
+                if state.get("limit_sensor_temp") is not None
+                else None
+            ),
+            "limit_temp_c": round(float(state["limit_temp"]), 2),
+            "current_temp": display(state.get("current_temp")),
+            "desired_temp": display(state.get("desired_temp")),
+            "limit_sensor_temp": display(state.get("limit_sensor_temp")),
+            "limit_temp": display(state.get("limit_temp")),
+            "unit": "F" if use_imperial else "C",
             "use_imperial": use_imperial,
-            "heater_enabled": state["heater_enabled"],
-            "heater_on": state["heater_on"],
+            "heater_enabled": bool(state.get("heater_enabled")),
+            "heater_on": bool(state.get("heater_on")),
             "status": status,
-            "heater_on_for": _fmt_duration(heater_on_duration),
+            "heater_on_for": fmt_duration(heater_on_duration),
             "heater_on_for_seconds": heater_on_duration,
-            "time_to_setpoint": _fmt_duration(time_to_setpoint),
-            "lockout_active": state.get("lockout_active", False),
+            "time_to_setpoint": fmt_duration(state.get("time_to_setpoint")),
+            "lockout_active": bool(state.get("lockout_active", False)),
             "lockout_reason": state.get("lockout_reason"),
-            "confirmation_required": state.get("confirmation_required", False),
+            "confirmation_required": bool(state.get("confirmation_required", False)),
             "confirmation_remaining": confirmation_remaining,
             "scheduled_start_at": state.get("scheduled_start_at"),
             "avg_heatup_rate_c_per_sec": state.get("avg_heatup_rate_c_per_sec"),
             "price_per_kwh": state.get("price_per_kwh"),
             "heater_power_kw": state.get("heater_power_kw"),
             "timer_mode": state.get("timer_mode", "stopwatch"),
-            "timer_running": state.get("timer_running", False),
-            "timer_elapsed": state.get("timer_elapsed", 0.0),
+            "timer_running": bool(state.get("timer_running", False)),
+            "timer_elapsed": float(state.get("timer_elapsed", 0.0)),
             "timer_duration": state.get("timer_duration"),
+            "thermometer_mode": state.get("thermometer_mode", "single"),
+            "sensor_type": state.get("sensor_type", "ds18b20"),
+            "bench_sensor_id": state.get("bench_sensor_id"),
+            "ceiling_sensor_id": state.get("ceiling_sensor_id"),
+            "goal_spi_cs": int(state.get("goal_spi_cs", 8)),
+            "limit_spi_cs": int(state.get("limit_spi_cs", 7)),
+            "detected_sensors": list(W1_DEVICES.keys()),
+            "mqtt_enabled": bool(state.get("mqtt_enabled", False)),
+            "mqtt_broker": state.get("mqtt_broker", ""),
+            "mqtt_port": int(state.get("mqtt_port", 1883)),
+            "mqtt_username": state.get("mqtt_username", ""),
+            "mqtt_connected": self._mqtt.connected,
         }
 
-        # Derived cost estimate for current ON duration
         price = state.get("price_per_kwh")
         power_kw = state.get("heater_power_kw")
         if price is not None and power_kw is not None and heater_on_duration is not None:
-            hours = heater_on_duration / 3600.0
-            snapshot["estimated_cost_current_session"] = round(power_kw * hours * price, 2)
+            snapshot["estimated_cost_current_session"] = round(
+                float(power_kw) * (heater_on_duration / 3600.0) * float(price),
+                2,
+            )
 
         return snapshot
 
     def set_heater_enabled(self, enabled: bool) -> None:
-        """User-facing toggle: when False, heater will be forced off.
-
-        Heater is always defaulted to OFF on startup since heater_enabled
-        starts False and the relay is initialized to the OFF state.
-        """
         with self._lock:
-            self._state.heater_enabled = enabled
-
-            # Clearing lockout/confirmation when user explicitly turns heater off
+            self._state.heater_enabled = bool(enabled)
             if not enabled:
                 self._state.lockout_active = False
                 self._state.lockout_reason = None
                 self._state.confirmation_required = False
                 self._state.confirmation_deadline = None
-
-                # Immediately turn relay off
                 self._set_relay(False)
+            self._save_state_to_disk_locked()
 
+    def confirm_continue(self) -> None:
+        with self._lock:
+            self._state.confirmation_required = False
+            self._state.confirmation_deadline = None
+            self._state.lockout_active = False
+            self._state.lockout_reason = None
+            self._state.heater_enabled = True
+            if self._state.heater_on:
+                self._state.heater_on_since = time.time()
             self._save_state_to_disk_locked()
 
     def set_desired_temperature(self, temp: float) -> None:
-        """Update desired temperature (in display units) and persist.
-
-        The web UI always posts in the currently selected units. Internally we
-        store and operate in Celsius, so convert if necessary.
-        """
         with self._lock:
-            # Convert to Celsius if currently using imperial
             if self._state.use_imperial:
                 desired_c = (temp - 32.0) * 5.0 / 9.0
             else:
                 desired_c = temp
-
-            # Clamp to safety maximum
-            if desired_c > MAX_TEMP_C:
-                desired_c = MAX_TEMP_C
-
-            self._state.desired_temp = desired_c
-            # Reset setpoint timing if user changes the target
+            self._state.desired_temp = min(float(desired_c), MAX_TEMP_C - 5.0)
             self._state.time_to_setpoint = None
             self._save_state_to_disk_locked()
 
-    def toggle_units(self) -> None:
-        """Toggle between imperial (F) and metric (C) display units.
+    def set_desired_temperature_c(self, temp_c: float) -> None:
+        with self._lock:
+            self._state.desired_temp = min(float(temp_c), MAX_TEMP_C - 5.0)
+            self._state.time_to_setpoint = None
+            self._save_state_to_disk_locked()
 
-        This affects only how temperatures are shown and how new setpoints
-        are interpreted; the control loop always uses Celsius internally.
-        """
+    def set_limit_temp(self, temp: float) -> None:
+        with self._lock:
+            if self._state.use_imperial:
+                limit_c = (temp - 32.0) * 5.0 / 9.0
+            else:
+                limit_c = temp
+            self._state.limit_temp = min(float(limit_c), MAX_TEMP_C - 5.0)
+            self._save_state_to_disk_locked()
+
+    def set_limit_temp_c(self, temp_c: float) -> None:
+        with self._lock:
+            self._state.limit_temp = min(float(temp_c), MAX_TEMP_C - 5.0)
+            self._save_state_to_disk_locked()
+
+    def set_thermometer_mode(self, mode: str) -> None:
+        if mode not in ("single", "dual"):
+            return
+        with self._lock:
+            self._state.thermometer_mode = mode
+            self._save_state_to_disk_locked()
+
+    def set_goal_sensor_type(self, sensor_type: str) -> None:
+        """Set goal sensor type (ds18b20 or thermocouple)."""
+        if sensor_type not in ("ds18b20", "thermocouple"):
+            return
+        with self._lock:
+            self._state.goal_sensor_type = sensor_type
+            self._save_state_to_disk_locked()
+    
+    def set_limit_sensor_type(self, sensor_type: str) -> None:
+        """Set limit sensor type (ds18b20 or thermocouple)."""
+        if sensor_type not in ("ds18b20", "thermocouple"):
+            return
+        with self._lock:
+            self._state.limit_sensor_type = sensor_type
+            self._save_state_to_disk_locked()
+
+    def set_sensor_type(self, sensor_type: str) -> None:
+        """DEPRECATED: Use set_goal_sensor_type / set_limit_sensor_type instead."""
+        if sensor_type not in ("ds18b20", "thermocouple"):
+            return
+        with self._lock:
+            self._state.sensor_type = sensor_type
+            self._state.goal_sensor_type = sensor_type
+            self._state.limit_sensor_type = sensor_type
+            self._save_state_to_disk_locked()
+
+    def set_sensor_ids(self, bench_id: Optional[str], ceiling_id: Optional[str]) -> None:
+        with self._lock:
+            self._state.bench_sensor_id = bench_id or None
+            self._state.ceiling_sensor_id = ceiling_id or None
+            self._save_state_to_disk_locked()
+
+    def set_spi_pins(self, goal_cs: int, limit_cs: int) -> None:
+        with self._lock:
+            self._state.goal_spi_cs = int(goal_cs)
+            self._state.limit_spi_cs = int(limit_cs)
+            self._save_state_to_disk_locked()
+
+    def set_mqtt_config(
+        self,
+        enabled: bool,
+        broker: str,
+        port: int,
+        username: str,
+        password: str,
+    ) -> None:
+        with self._lock:
+            changed = (
+                self._state.mqtt_enabled != enabled
+                or self._state.mqtt_broker != broker
+                or self._state.mqtt_port != int(port)
+                or self._state.mqtt_username != username
+                or self._state.mqtt_password != password
+            )
+            self._state.mqtt_enabled = bool(enabled)
+            self._state.mqtt_broker = broker
+            self._state.mqtt_port = int(port)
+            self._state.mqtt_username = username
+            self._state.mqtt_password = password
+            self._save_state_to_disk_locked()
+
+        if changed:
+            self._mqtt.stop()
+            if enabled and broker:
+                self._mqtt.start(broker, int(port), username, password)
+
+    def toggle_units(self) -> None:
         with self._lock:
             self._state.use_imperial = not self._state.use_imperial
             self._save_state_to_disk_locked()
 
-    # --- Scheduling and cost configuration API -----------------------------
-
     def set_schedule(self, scheduled_epoch: Optional[float]) -> None:
-        """Set or clear a simple one-shot schedule.
-
-        The timestamp is the time at which the user wants the sauna hot. The
-        control loop will start heating early based on the measured
-        avg_heatup_rate_c_per_sec so that the sauna is near the desired
-        setpoint at that time.
-        """
         with self._lock:
             self._state.scheduled_start_at = scheduled_epoch
             self._save_state_to_disk_locked()
 
     def set_cost_config(self, price_per_kwh: Optional[float], heater_power_kw: Optional[float]) -> None:
-        """Set electricity cost and heater power for cost estimation."""
         with self._lock:
             self._state.price_per_kwh = price_per_kwh
             self._state.heater_power_kw = heater_power_kw
             self._save_state_to_disk_locked()
 
     def stop(self) -> None:
-        """Signal the background loop to stop and cleanup GPIO."""
         self._stop_event.set()
         self._thread.join(timeout=2.0)
+        self._mqtt.stop()
         GPIO.cleanup()
 
-    # --- Timer / stopwatch API -------------------------------------------
+    # -- Timer API ------------------------------------------------------------
 
     def timer_set_mode(self, mode: str) -> None:
-        """Set timer mode to 'stopwatch' or 'timer'."""
         if mode not in {"stopwatch", "timer"}:
             return
         with self._lock:
@@ -446,7 +733,6 @@ class SaunaController:
             self._save_state_to_disk_locked()
 
     def timer_set_duration_minutes(self, minutes: int) -> None:
-        """Set timer duration in minutes (only relevant in timer mode)."""
         if minutes <= 0:
             return
         with self._lock:
@@ -454,7 +740,6 @@ class SaunaController:
             self._save_state_to_disk_locked()
 
     def timer_start(self) -> None:
-        """Start or resume timer/stopwatch."""
         with self._lock:
             if not self._state.timer_running:
                 self._state.timer_running = True
@@ -462,87 +747,78 @@ class SaunaController:
                 self._save_state_to_disk_locked()
 
     def timer_stop(self) -> None:
-        """Pause timer/stopwatch, accumulating elapsed time."""
         with self._lock:
             if self._state.timer_running and self._state.timer_start_ts is not None:
-                now = time.time()
-                self._state.timer_elapsed += now - self._state.timer_start_ts
+                self._state.timer_elapsed += time.time() - self._state.timer_start_ts
             self._state.timer_running = False
             self._state.timer_start_ts = None
             self._save_state_to_disk_locked()
 
     def timer_reset(self) -> None:
-        """Reset elapsed time and stop timer/stopwatch."""
         with self._lock:
             self._state.timer_running = False
             self._state.timer_start_ts = None
             self._state.timer_elapsed = 0.0
             self._save_state_to_disk_locked()
 
-    # --- Internal helpers ---------------------------------------------------
+    # -- Internal -------------------------------------------------------------
 
     def _set_relay(self, on: bool) -> None:
-        """Drive the relay, assuming active-HIGH behavior.
-
-        on=True  -> GPIO HIGH -> heater ON
-        on=False -> GPIO LOW  -> heater OFF
-        """
-        self._state.heater_on = on
+        """Drive relay; caller must hold self._lock."""
+        self._state.heater_on = bool(on)
+        GPIO.output(RELAY_GPIO, bool(on))
         if on:
-            GPIO.output(RELAY_GPIO, True)
             if self._state.heater_on_since is None:
                 self._state.heater_on_since = time.time()
         else:
-            GPIO.output(RELAY_GPIO, False)
             self._state.heater_on_since = None
 
     def _load_state_from_disk(self) -> None:
-        """Load persisted configuration if present.
-
-        Currently persisted:
-        - desired_temp (Celsius)
-        - heater_enabled
-        - use_imperial (bool)
-        """
         if not os.path.isfile(self.config_path):
             return
         try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            with open(self.config_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
         except Exception:
             return
 
         with self._lock:
-            self._state.desired_temp = float(data.get("desired_temp", self._state.desired_temp))
-            self._state.heater_enabled = bool(data.get("heater_enabled", self._state.heater_enabled))
-            self._state.use_imperial = bool(data.get("use_imperial", self._state.use_imperial))
+            state = self._state
+            state.desired_temp = float(data.get("desired_temp", state.desired_temp))
+            state.limit_temp = float(data.get("limit_temp", state.limit_temp))
+            state.heater_enabled = bool(data.get("heater_enabled", state.heater_enabled))
+            state.use_imperial = bool(data.get("use_imperial", state.use_imperial))
+            state.scheduled_start_at = data.get("scheduled_start_at")
+            state.avg_heatup_rate_c_per_sec = data.get("avg_heatup_rate_c_per_sec")
+            state.price_per_kwh = data.get("price_per_kwh")
+            state.heater_power_kw = data.get("heater_power_kw")
+            state.timer_mode = data.get("timer_mode", state.timer_mode)
+            state.timer_running = bool(data.get("timer_running", state.timer_running))
+            state.timer_elapsed = float(data.get("timer_elapsed", state.timer_elapsed))
+            state.timer_duration = data.get("timer_duration", state.timer_duration)
+            state.thermometer_mode = data.get("thermometer_mode", state.thermometer_mode)
+            state.sensor_type = data.get("sensor_type", state.sensor_type)
+            state.goal_sensor_type = data.get("goal_sensor_type", data.get("sensor_type", "ds18b20"))
+            state.limit_sensor_type = data.get("limit_sensor_type", data.get("sensor_type", "ds18b20"))
+            state.bench_sensor_id = data.get("bench_sensor_id")
+            state.ceiling_sensor_id = data.get("ceiling_sensor_id")
+            state.goal_spi_cs = int(data.get("goal_spi_cs", state.goal_spi_cs))
+            state.limit_spi_cs = int(data.get("limit_spi_cs", state.limit_spi_cs))
+            state.mqtt_enabled = bool(data.get("mqtt_enabled", False))
+            state.mqtt_broker = str(data.get("mqtt_broker", ""))
+            state.mqtt_port = int(data.get("mqtt_port", 1883))
+            state.mqtt_username = str(data.get("mqtt_username", ""))
+            state.mqtt_password = str(data.get("mqtt_password", ""))
 
-            # Optional persisted scheduling and cost config
-            self._state.scheduled_start_at = data.get("scheduled_start_at")
-            self._state.avg_heatup_rate_c_per_sec = data.get("avg_heatup_rate_c_per_sec")
-            self._state.price_per_kwh = data.get("price_per_kwh")
-            self._state.heater_power_kw = data.get("heater_power_kw")
-            # Timer/stopwatch state (optional)
-            self._state.timer_mode = data.get("timer_mode", self._state.timer_mode)
-            self._state.timer_running = bool(data.get("timer_running", self._state.timer_running))
-            self._state.timer_elapsed = float(data.get("timer_elapsed", self._state.timer_elapsed))
-            self._state.timer_duration = data.get("timer_duration", self._state.timer_duration)
-            # Sensor ID configuration
-            self._state.bench_sensor_id = data.get("bench_sensor_id")
-            self._state.ceiling_sensor_id = data.get("ceiling_sensor_id")
-            # Safety-related flags default to safe values on startup
-            self._state.lockout_active = False
-            self._state.lockout_reason = None
-            self._state.confirmation_required = False
-            self._state.confirmation_deadline = None
+            state.lockout_active = False
+            state.lockout_reason = None
+            state.confirmation_required = False
+            state.confirmation_deadline = None
 
     def _save_state_to_disk_locked(self) -> None:
-        """Persist relevant configuration fields to JSON.
-
-        Caller must hold self._lock.
-        """
         data = {
             "desired_temp": self._state.desired_temp,
+            "limit_temp": self._state.limit_temp,
             "heater_enabled": self._state.heater_enabled,
             "use_imperial": self._state.use_imperial,
             "scheduled_start_at": self._state.scheduled_start_at,
@@ -553,77 +829,106 @@ class SaunaController:
             "timer_running": self._state.timer_running,
             "timer_elapsed": self._state.timer_elapsed,
             "timer_duration": self._state.timer_duration,
+            "thermometer_mode": self._state.thermometer_mode,
+            "sensor_type": self._state.sensor_type,
+            "goal_sensor_type": self._state.goal_sensor_type,
+            "limit_sensor_type": self._state.limit_sensor_type,
             "bench_sensor_id": self._state.bench_sensor_id,
             "ceiling_sensor_id": self._state.ceiling_sensor_id,
+            "goal_spi_cs": self._state.goal_spi_cs,
+            "limit_spi_cs": self._state.limit_spi_cs,
+            "mqtt_enabled": self._state.mqtt_enabled,
+            "mqtt_broker": self._state.mqtt_broker,
+            "mqtt_port": self._state.mqtt_port,
+            "mqtt_username": self._state.mqtt_username,
+            "mqtt_password": self._state.mqtt_password,
         }
         try:
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            with open(self.config_path, "w", encoding="utf-8") as file:
+                json.dump(data, file, indent=2)
         except Exception:
-            # Ignore persistence errors in control loop; log in real system
             pass
 
     def _run_loop(self) -> None:
-        """Background control loop.
-
-        Runs until stop() is called. Periodically reads temperature and
-        applies dual-sensor control:
-        - Bench temp (primary): drives user setpoint.
-        - Ceiling temp (safety): prevents overheating near heater.
-        Heater turns OFF when bench >= target OR ceiling >= 93.3°C (200°F).
-        """
-        CEILING_SAFETY_LIMIT_C = 93.3  # 200°F
+        last_mqtt_publish = 0.0
 
         while not self._stop_event.is_set():
             now = time.time()
-            bench_temp, ceiling_temp = read_temps(
-                self._state.bench_sensor_id,
-                self._state.ceiling_sensor_id
-            )
 
             with self._lock:
-                self._state.current_temp = bench_temp
-                self._state.ceiling_temp = ceiling_temp
+                goal_sensor_type = self._state.goal_sensor_type
+                limit_sensor_type = self._state.limit_sensor_type
+                thermometer_mode = self._state.thermometer_mode
+                bench_sensor_id = self._state.bench_sensor_id
+                ceiling_sensor_id = self._state.ceiling_sensor_id
+                goal_spi_cs = self._state.goal_spi_cs
+                limit_spi_cs = self._state.limit_spi_cs
+                heater_on = self._state.heater_on
+
+            goal_reading: Optional[float]
+            limit_reading: Optional[float]
+
+            if goal_sensor_type == "ds18b20" and not W1_DEVICES:
+                goal_reading, limit_reading = _mock_temps(heater_on)
+            else:
+                goal_reading = _read_sensor(
+                    goal_sensor_type,
+                    bench_sensor_id,
+                    goal_spi_cs,
+                    use_first_w1_fallback=True,
+                )
+                limit_reading = None
+                if thermometer_mode == "dual":
+                    limit_reading = _read_sensor(
+                        limit_sensor_type,
+                        ceiling_sensor_id,
+                        limit_spi_cs,
+                        use_first_w1_fallback=False,
+                    )
+
+                if goal_reading is None:
+                    mock_goal, mock_limit = _mock_temps(heater_on)
+                    goal_reading = mock_goal
+                    if thermometer_mode == "dual" and limit_reading is None:
+                        limit_reading = mock_limit
+
+            with self._lock:
+                self._state.current_temp = goal_reading
+                self._state.limit_sensor_temp = (
+                    limit_reading if self._state.thermometer_mode == "dual" else None
+                )
                 self._state.last_updated = now
 
                 desired = self._state.desired_temp
+                limit_cutoff = self._state.limit_temp
                 enabled = self._state.heater_enabled
 
-                # Enforce hard safety maximum on bench sensor
-                if bench_temp >= MAX_TEMP_C:
+                # Hard lockout if either sensor exceeds absolute max.
+                if goal_reading >= MAX_TEMP_C or (
+                    self._state.thermometer_mode == "dual"
+                    and limit_reading is not None
+                    and limit_reading >= MAX_TEMP_C
+                ):
                     self._set_relay(False)
                     self._state.lockout_active = True
                     self._state.lockout_reason = "max_temp"
-                # Also enforce ceiling safety limit
-                elif ceiling_temp is not None and ceiling_temp >= CEILING_SAFETY_LIMIT_C:
-                    self._set_relay(False)
-                    self._state.lockout_active = True
-                    self._state.lockout_reason = "ceiling_overtemp"
                 else:
-                    # Simple one-shot schedule: if we have a scheduled target
-                    # time and an estimate of heat-up rate, start early enough
-                    # to reach desired temp by scheduled_start_at.
+                    # Schedule logic
                     if (
                         self._state.scheduled_start_at is not None
                         and self._state.avg_heatup_rate_c_per_sec is not None
                         and not self._state.lockout_active
                     ):
-                        time_until_target = self._state.scheduled_start_at - now
-                        # How long we expect to need to heat from current temp
-                        delta_c = max(desired - bench_temp, 0.0)
-                        if self._state.avg_heatup_rate_c_per_sec > 0:
-                            required_heat_time = delta_c / self._state.avg_heatup_rate_c_per_sec
-                        else:
-                            required_heat_time = 0.0
-
-                        # If it's time to start heating (or we're late), enable heater
-                        if time_until_target <= required_heat_time:
+                        time_until = self._state.scheduled_start_at - now
+                        delta_c = max(desired - goal_reading, 0.0)
+                        rate = self._state.avg_heatup_rate_c_per_sec
+                        required = delta_c / rate if rate > 0 else 0.0
+                        if time_until <= required:
                             self._state.heater_enabled = True
                             enabled = True
-                            # one-shot schedule; clear once we have started
                             self._state.scheduled_start_at = None
 
-                    # Handle max-on-time safety
+                    # Max-on-time confirmation flow
                     if self._state.heater_on_since is not None:
                         on_duration = now - self._state.heater_on_since
                         if (
@@ -631,11 +936,9 @@ class SaunaController:
                             and not self._state.confirmation_required
                             and not self._state.lockout_active
                         ):
-                            # Start confirmation window
                             self._state.confirmation_required = True
                             self._state.confirmation_deadline = now + CONFIRMATION_TIMEOUT_SEC
 
-                    # If confirmation window has expired without user action
                     if (
                         self._state.confirmation_required
                         and self._state.confirmation_deadline is not None
@@ -648,63 +951,56 @@ class SaunaController:
                         self._state.lockout_active = True
                         self._state.lockout_reason = "max_on_time"
 
-                    # Dual-sensor bang-bang control:
-                    # Turn ON if bench < target - hysteresis AND ceiling < safety limit.
-                    # Turn OFF if bench > target + hysteresis OR ceiling >= safety limit - hysteresis.
                     if not self._state.lockout_active and enabled:
-                        # Check if we should turn heater ON
-                        bench_wants_heat = bench_temp < desired - HYSTERESIS
-                        ceiling_safe = (ceiling_temp is None or
-                                        ceiling_temp < CEILING_SAFETY_LIMIT_C - HYSTERESIS)
+                        if self._state.thermometer_mode == "single":
+                            if goal_reading < desired - HYSTERESIS:
+                                self._set_relay(True)
+                            elif goal_reading > desired + HYSTERESIS:
+                                self._set_relay(False)
+                        else:
+                            goal_needs_heat = goal_reading < desired - HYSTERESIS
+                            goal_satisfied = goal_reading > desired + HYSTERESIS
+                            limit_safe = (
+                                limit_reading is None
+                                or limit_reading < limit_cutoff - HYSTERESIS
+                            )
+                            limit_reached = (
+                                limit_reading is not None
+                                and limit_reading >= limit_cutoff - HYSTERESIS
+                            )
 
-                        # Check if we should turn heater OFF
-                        bench_hot_enough = bench_temp > desired + HYSTERESIS
-                        ceiling_too_hot = (ceiling_temp is not None and
-                                           ceiling_temp >= CEILING_SAFETY_LIMIT_C - HYSTERESIS)
+                            if goal_needs_heat and limit_safe:
+                                self._set_relay(True)
+                            elif goal_satisfied or limit_reached:
+                                self._set_relay(False)
+                    elif self._state.heater_on:
+                        self._set_relay(False)
 
-                        if bench_wants_heat and ceiling_safe:
-                            self._set_relay(True)
-                        elif bench_hot_enough or ceiling_too_hot:
-                            self._set_relay(False)
-                    else:
-                        # If not enabled or in lockout, ensure relay is off
-                        if self._state.heater_on:
-                            self._set_relay(False)
-
-                # Track time to first reach setpoint and update average heatup rate
-                if self._state.heater_on_since is not None and bench_temp >= desired:
+                if self._state.heater_on_since is not None and goal_reading >= desired:
                     elapsed = now - self._state.heater_on_since
                     if elapsed > 0:
                         if self._state.time_to_setpoint is None:
-                            # First time we hit setpoint for this session
                             self._state.time_to_setpoint = elapsed
-
-                        # Update average heat-up rate (simple exponential moving average)
-                        delta_c = max(desired - self._state.current_temp + (bench_temp - desired), 0.0)
-                        # Conservative: use desired - (bench_temp at heater_on_since approx)
-                        # If we assume heater_on_since temp was lower, approximate delta_c
-                        if delta_c <= 0:
-                            delta_c = desired - (bench_temp - 5.0)
+                        delta_c = max(desired - (goal_reading - 5.0), 0.0)
                         if delta_c > 0:
                             new_rate = delta_c / elapsed
                             old_rate = self._state.avg_heatup_rate_c_per_sec
                             if old_rate is None:
                                 self._state.avg_heatup_rate_c_per_sec = new_rate
                             else:
-                                alpha = 0.3
-                                self._state.avg_heatup_rate_c_per_sec = (
-                                    alpha * new_rate + (1 - alpha) * old_rate
-                                )
+                                self._state.avg_heatup_rate_c_per_sec = 0.3 * new_rate + 0.7 * old_rate
 
-                # Update timer/stopwatch elapsed time when running
                 if self._state.timer_running and self._state.timer_start_ts is not None:
                     self._state.timer_elapsed += CONTROL_INTERVAL_SEC
+
+            if now - last_mqtt_publish >= MQTT_PUBLISH_INTERVAL_SEC:
+                self._mqtt.publish_state(self.get_state_snapshot())
+                last_mqtt_publish = now
 
             time.sleep(CONTROL_INTERVAL_SEC)
 
 
 if __name__ == "__main__":
-    # Simple manual test harness: print state periodically
     controller = SaunaController()
     try:
         while True:
