@@ -100,6 +100,27 @@ That guide covers:
 - Backend auto-start uses `sauna.service`.
 - Kiosk auto-start uses LXDE autostart plus Chromium kiosk mode.
 
+### Pi Desktop Shortcut Installer
+
+If you want one-command setup for desktop launchers on the Pi home screen:
+
+```bash
+cd /home/pi/sauna_controller
+chmod +x install_pi_shortcuts.sh launch_sauna_kiosk.sh run_sauna.sh
+./install_pi_shortcuts.sh
+```
+
+This creates:
+
+- `~/Desktop/Smart Sauna Server.desktop`
+- `~/Desktop/Smart Sauna Kiosk.desktop`
+
+To also auto-open kiosk mode after desktop login:
+
+```bash
+./install_pi_shortcuts.sh --autostart
+```
+
 ## Configuration
 
 ### Thermometer Setup
@@ -189,4 +210,3 @@ Published state payload includes:
 - All configuration is persisted to `sauna_state.json` in the project root.
 - Older single-sensor configurations still load and run.
 - For production Pi deployments, use [PI_SETUP.md](PI_SETUP.md) for the full auto-start and kiosk instructions.
-

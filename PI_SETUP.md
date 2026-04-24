@@ -407,33 +407,30 @@ sudo reboot
 
 ---
 
-## 8. Optional Desktop Shortcut
+## 8. Install Desktop Shortcuts (Recommended)
 
-If you want a manual desktop launcher:
-
-```bash
-mkdir -p /home/pi/Desktop
-nano /home/pi/Desktop/SmartSauna.desktop
-```
-
-Paste:
-
-```ini
-[Desktop Entry]
-Type=Application
-Name=Smart Sauna Controller
-Comment=Start the Smart Sauna Flask app
-Exec=/home/pi/sauna_controller/run_sauna.sh
-Icon=utilities-terminal
-Terminal=true
-Categories=Utility;
-```
-
-Make it executable:
+Use the included installer to create home-screen launchers:
 
 ```bash
-chmod +x /home/pi/Desktop/SmartSauna.desktop
+cd /home/pi/sauna_controller
+chmod +x install_pi_shortcuts.sh launch_sauna_kiosk.sh run_sauna.sh
+./install_pi_shortcuts.sh
 ```
+
+This creates two desktop shortcuts:
+
+- `~/Desktop/Smart Sauna Server.desktop` to start the backend in a terminal.
+- `~/Desktop/Smart Sauna Kiosk.desktop` to launch Chromium in kiosk mode and auto-start backend if needed.
+
+If you also want kiosk mode to auto-open on each desktop login:
+
+```bash
+./install_pi_shortcuts.sh --autostart
+```
+
+This adds an autostart entry at:
+
+- `~/.config/autostart/smart-sauna-kiosk.desktop`
 
 ---
 
