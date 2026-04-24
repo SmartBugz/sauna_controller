@@ -2,37 +2,40 @@
 
 This guide covers:
 
-- **Hardware setup**: DS18B20 dual-sensor 1-Wire wiring OR MAX31855 thermocouple SPI wiring (choose one)
-- **Service auto-start**: systemd service for automatic startup on boot/reboot
-- **Kiosk mode**: Auto-launch Chromium browser in full-screen on the 7" touchscreen
-- **MQTT integration**: Connect to Home Assistant via MQTT auto-discovery
-- **Configuration**: Set up thermometer mode and sensor selection
-- **Troubleshooting**: Common issues and fixes
+- DS18B20 and MAX31855 wiring.
+- Running the Flask server manually.
+- Starting the backend automatically with `systemd`.
+- Starting Chromium automatically in kiosk mode.
+- Connecting Home Assistant over MQTT.
+- Making the whole stack start automatically after boot.
 
-> All paths assume: project cloned to `/home/pi/sauna_controller` and virtualenv at `/home/pi/sauna_controller/.venv`
+> Paths in this guide assume the project lives at `/home/pi/sauna_controller` and the virtual environment is at `/home/pi/sauna_controller/.venv`.
 >
-> The app will run in **single-sensor DS18B20 mode by default**. Use the web UI ("Thermometer Setup" widget) to switch modes or sensor types at runtime.
+> The app starts in single-sensor DS18B20 mode by default. Use `Settings` -> `Edit Thermometer Setup` in the UI to change sensor mode or sensor type.
 
 ---
 
-## 0. Hardware Wiring
+## 1. Hardware Wiring
 
-Choose **one** of the following sensor configurations:
+Choose one sensor configuration.
 
-### Option A: Dual DS18B20 Sensors (Recommended for reliability)
+### Option A: Dual DS18B20 Sensors
 
-The system can use **two** DS18B20 1-Wire temperature sensors in dual-sensor mode:
-- **Sensor 1 (Bench Level)**: Primary control sensor. Place at sitting height where users feel the heat.
-- **Sensor 2 (Ceiling Level)**: Safety cutoff sensor. Place near ceiling above the heater.
+Use two DS18B20 probes in dual-sensor mode:
 
-**Wiring (both sensors share the same GPIO 4 data line):**
-- **Data pin** → GPIO 4 (both sensors in parallel)
-- **VCC** → 3.3V (both sensors in parallel)
-- **GND** → Ground (both sensors in parallel)
-- **Pull-up resistor:** 4.7kΩ between data line and 3.3V (shared, required for 1-Wire protocol)
+- Bench sensor: primary control sensor at sitting height.
+- Ceiling sensor: safety cutoff sensor near the heater or ceiling.
 
-**Connection diagram:**
-```
+Wire both sensors to the same 1-Wire bus:
+
+- Data -> GPIO 4.
+- VCC -> 3.3V.
+- GND -> Ground.
+- Pull-up resistor: 4.7kΩ between GPIO 4 data and 3.3V.
+
+Connection diagram:
+
+```text
 Pi GPIO 4  ────────┬─────────── DS18B20_1 (Bench)
                    │
                    ├─────────── DS18B20_2 (Ceiling)
@@ -42,142 +45,163 @@ Pi GPIO 4  ────────┬─────────── DS18B20_
                 Pi 3.3V
 ```
 
-**Control Logic (Dual-Sensor Mode):**
-- Heater turns ON when: `bench_temp < target - hysteresis` **AND** `ceiling_temp < limit_temp - hysteresis`
-- Heater turns OFF when: `bench_temp > target + hysteresis` **OR** `ceiling_temp >= limit_temp - hysteresis`
-- Hard lockout if either sensor ≥ 105°C
+Dual-mode control logic:
 
-This prevents the ceiling from overheating while ensuring adequate heat at bench level.
+- Heater turns on when `bench_temp < target - hysteresis` and `ceiling_temp < limit_temp - hysteresis`.
+- Heater turns off when `bench_temp > target + hysteresis` or `ceiling_temp >= limit_temp - hysteresis`.
+- Hard lockout occurs if either sensor reaches 105°C.
 
-**To find sensor IDs after wiring:**
+Find DS18B20 sensor IDs:
+
 ```bash
 ls -la /sys/bus/w1/devices/ | grep 28-
 ```
 
-You'll see entries like: `28-0119a94519ee` and `28-01140c63a7ee`
+Use those IDs in `Settings` -> `Edit Thermometer Setup`.
 
-Use these IDs in the web UI's "Thermometer Setup" widget.
+### Option B: Single DS18B20 Sensor
 
----
+Wire one DS18B20 to GPIO 4 using the same wiring as above.
 
-### Option B: Single DS18B20 Sensor (Budget option)
+To upgrade later to dual-sensor mode:
 
-Wire only **one** sensor to GPIO 4 (same wiring as above, just omit the second sensor). The app will run in single-sensor mode by default. Upgrade to dual-sensor by:
-1. Connect the second sensor to GPIO 4
-2. Find its ID with `ls -la /sys/bus/w1/devices/ | grep 28-`
-3. In the web UI, switch "Thermometer Setup" from `Single` to `Dual` and enter both sensor IDs
+1. Connect the second DS18B20 to the same GPIO 4 bus.
+2. Find both sensor IDs.
+3. Open `Settings` -> `Edit Thermometer Setup`.
+4. Change `Mode` to `Dual`.
+5. Enter both sensor IDs and save.
 
----
+### Option C: MAX31855 Thermocouples
 
-### Option C: MAX31855 Thermocouple on SPI (High-temperature option)
+Use MAX31855 boards if you prefer thermocouples instead of DS18B20 probes.
 
-For temperatures above typical sauna range (~105°C max), use a K-type thermocouple with MAX31855 ADC on SPI.
+Required hardware:
 
-**Required hardware:**
-- MAX31855 breakout board (Adafruit or compatible)
-- K-type thermocouple probe
-- 3× Pi SPI pins (CLK, MOSI, MISO on GPIO 10, 9, 11)
-- 2× Pi GPIO pins for slave select (CS) – defaults are GPIO 8 (goal) and GPIO 7 (limit)
+- MAX31855 breakout board.
+- K-type thermocouple probe.
+- SPI pins on the Pi.
+- One CS pin per MAX31855 board.
 
-**Wiring (per Adafruit MAX31855 documentation):**
+Default pin usage:
 
-For one thermocouple (single-sensor mode):
-```
+- SCLK -> GPIO 11.
+- MOSI -> GPIO 10.
+- MISO -> GPIO 9.
+- Goal thermocouple CS -> GPIO 8.
+- Limit thermocouple CS -> GPIO 7.
+
+Single thermocouple wiring:
+
+```text
 MAX31855_1          Pi GPIO
 ─────────
-  VCC     ─────->  3.3V
-  GND     ─────->  GND
-  CLK     ─────->  GPIO 11 (SCLK)
-  MOSI    ─────->  GPIO 10 (MOSI)
-  MISO    ─────->  GPIO 9 (MISO)
-  CS      ─────->  GPIO 8 (configurable)
-  TC+/TC- ─────->  K-type thermocouple leads
+VCC      ─────->  3.3V
+GND      ─────->  GND
+CLK      ─────->  GPIO 11
+MOSI     ─────->  GPIO 10
+MISO     ─────->  GPIO 9
+CS       ─────->  GPIO 8
+TC+/TC-  ─────->  Thermocouple leads
 ```
 
-For dual thermocouples (dual-sensor mode):
-```
-Goal MAX31855      Pi GPIO
-  CS  ─────->  GPIO 8 (configurable, default goal CS)
-  CLK ─────->  GPIO 11 (shared SPI)
-  MOSI─────->  GPIO 10 (shared SPI)
-  MISO─────->  GPIO 9 (shared SPI)
+Dual thermocouple wiring:
 
-Limit MAX31855     Pi GPIO
-  CS  ─────->  GPIO 7 (configurable, default limit CS)
-  CLK ─────->  GPIO 11 (shared SPI)
-  MOSI─────->  GPIO 10 (shared SPI)
-  MISO─────->  GPIO 9 (shared SPI)
+```text
+Goal MAX31855       Pi GPIO
+CS       ─────->  GPIO 8
+CLK      ─────->  GPIO 11
+MOSI     ─────->  GPIO 10
+MISO     ─────->  GPIO 9
 
-Both boards:
-  VCC ─────->  3.3V (shared)
-  GND ─────->  GND (shared)
+Limit MAX31855      Pi GPIO
+CS       ─────->  GPIO 7
+CLK      ─────->  GPIO 11
+MOSI     ─────->  GPIO 10
+MISO     ─────->  GPIO 9
 ```
 
-**Installation:**
-On the Pi, install the Adafruit library:
+Install the Python dependency:
+
 ```bash
 source /home/pi/sauna_controller/.venv/bin/activate
 pip install adafruit-circuitpython-max31855
 ```
 
-**Configuration:**
-In the web UI "Thermometer Setup" widget:
-1. Change "Sensor Type" to `Thermocouple (MAX31855)`
-2. Set "Goal SPI CS" to GPIO 8 (or your chosen pin)
-3. Set "Limit SPI CS" to GPIO 7 (or your chosen pin, only needed in dual mode)
+Then configure the UI:
 
----
+1. Open `Settings` -> `Edit Thermometer Setup`.
+2. Set `Goal Sensor` to `Thermocouple`.
+3. If using dual mode, set `Limit Sensor` to `Thermocouple`.
+4. Set the correct `Goal SPI CS` and `Limit SPI CS` values.
+5. Click `Save`.
 
-### Relay Control
+### Relay Wiring
 
-All modes use GPIO 17 for heater relay control:
-- **Relay control pin:** GPIO 17 (BCM numbering)
-- **Relay type:** Active-HIGH (HIGH = heater ON, LOW = heater OFF)
-- Connect relay module input to GPIO 17, output contacts to sauna heater contactor
+The controller uses GPIO 17 for the heater relay.
 
-**Wiring example:**
-```
+- Relay control pin: GPIO 17.
+- Relay type: active-HIGH.
+- HIGH means heater on, LOW means heater off.
+
+Example relay wiring:
+
+```text
 Pi GPIO 17 ─────> Relay Module Input
-Relay COM  ─────> Sauna Heater Contactor Coil (-)
-Relay NO   ─────> Sauna Heater Contactor Coil (+)
-           (or NC depending on heater design)
+Relay COM  ─────> Heater Contactor Coil (-)
+Relay NO   ─────> Heater Contactor Coil (+)
 ```
 
 ---
 
-## 1. Prepare 1-Wire (GPIO 4) on Pi OS
+## 2. Enable Required Pi Interfaces
 
-If using DS18B20 sensors, enable 1-Wire:
+### Enable 1-Wire for DS18B20
+
+If you are using DS18B20 sensors:
 
 ```bash
 sudo raspi-config
 ```
 
 Navigate to:
-- `Interface Options` → `I2C` → `Yes` (enable I2C if not already)
-- `Interface Options` → `1-Wire` → `Yes`
+
+- `Interface Options` -> `1-Wire` -> `Yes`
 
 Reboot:
+
 ```bash
 sudo reboot
 ```
 
-After reboot, verify sensors are detected:
+Verify detection:
+
 ```bash
 ls -la /sys/bus/w1/devices/ | grep 28-
 ```
 
-You should see one or more `28-*` entries (one per DS18B20).
+### Enable SPI for MAX31855
+
+If you are using thermocouples:
+
+```bash
+sudo raspi-config
+```
+
+Navigate to:
+
+- `Interface Options` -> `SPI` -> `Yes`
+
+Reboot and verify:
+
+```bash
+ls /dev/spidev*
+```
 
 ---
 
-## 2. Create a run script for the app
+## 3. Run the Server Manually
 
-Create a helper script to activate the virtualenv and start `main.py`.
-
-Create a small helper script to activate the virtualenv and start `main.py`.
-
-From the Pi:
+Create a helper script:
 
 ```bash
 cd /home/pi/sauna_controller
@@ -191,13 +215,23 @@ EOF
 chmod +x /home/pi/sauna_controller/run_sauna.sh
 ```
 
-This script will be used by the systemd service and any manual shortcuts.
+Run the server manually:
+
+```bash
+cd /home/pi/sauna_controller
+./run_sauna.sh
+```
+
+Open the UI:
+
+- From the Pi: <http://localhost:5000>
+- From another device: `http://<pi-ip>:5000`
 
 ---
 
-## 3. Auto-start the backend with systemd
+## 4. Start the Backend Automatically on Boot
 
-Create a systemd service so the app starts automatically on boot and restarts after crashes.
+Create the service file:
 
 ```bash
 sudo nano /etc/systemd/system/sauna.service
@@ -224,7 +258,7 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-Enable and start the service:
+Enable and start it:
 
 ```bash
 sudo systemctl daemon-reload
@@ -233,76 +267,87 @@ sudo systemctl start sauna.service
 sudo systemctl status sauna.service
 ```
 
-Check logs:
+Useful commands:
+
 ```bash
 journalctl -u sauna.service -f
-```
-
-To stop (e.g., for debugging):
-```bash
 sudo systemctl stop sauna.service
-```
-
-To disable on boot:
-```bash
 sudo systemctl disable sauna.service
 ```
 
 ---
 
-## 4. Configure Thermometer Mode and Sensors
+## 5. Configure Thermometer Setup in the UI
 
-On first boot, the app runs in **single-sensor DS18B20 mode by default**. To switch modes or sensor types:
+On first boot, the app uses single-sensor DS18B20 mode by default.
 
-1. Open the web UI: `http://<pi-ip>:5000`
-2. Scroll down to "Thermometer Setup" widget
-3. Select desired configuration:
-   - **Mode**: `Single` or `Dual`
-   - **Sensor Type**: `DS18B20 (1-Wire)` or `Thermocouple (MAX31855)`
-   - **Sensor IDs / CS Pins**: Enter appropriate identifiers
-4. Click "Save Thermometer Setup"
-5. Refresh the page to confirm changes took effect
+To configure sensors:
 
-**Configuration persists** in `sauna_state.json`; you can edit the file directly if needed.
+1. Open `http://<pi-ip>:5000`.
+2. Go to the `Settings` tab.
+3. Click `Edit Thermometer Setup`.
+4. Set `Mode`, sensor types, sensor IDs, and SPI CS pins as needed.
+5. Click `Save`.
+6. Refresh the page to confirm the readings and mode.
+
+Configuration persists in `sauna_state.json`.
 
 ---
 
-## 5. Optional: Home Assistant MQTT Integration
+## 6. Configure Home Assistant MQTT
 
-To integrate with Home Assistant via MQTT:
+Prerequisites:
 
-**Prerequisites:**
-- Home Assistant with MQTT broker running (e.g., Mosquitto add-on)
-- Network connectivity between Pi and HA instance
+- A reachable MQTT broker.
+- Network connectivity between the Pi and Home Assistant.
 
-**Setup:**
+Setup steps:
 
-1. Obtain your broker's hostname/IP and port (default: `1883`, or `8883` for SSL)
-2. If using authentication, have username and password ready
-3. In the kiosk UI, scroll to "Home Assistant MQTT" widget
-4. Check "Enable MQTT integration"
-5. Enter:
-   - **Broker Host/IP**: (e.g., `192.168.1.100` or `hassio.local`)
-   - **Broker Port**: (e.g., `1883`)
-   - **Username**: (if your broker requires auth)
-   - **Password**: (if your broker requires auth)
-6. Click "Save MQTT Settings"
-7. Status should show "Connected" within a few seconds
+1. Open `http://<pi-ip>:5000`.
+2. Go to the `Settings` tab.
+3. Click `Edit Home Assistant Setup`.
+4. Enable MQTT.
+5. Enter broker host, port, username, and password.
+6. Click `Save`.
+7. Confirm the status changes to `Connected`.
 
-**Home Assistant Discovery:**
+### What Home Assistant Can Do
 
-Once connected, Home Assistant will auto-discover:
-- **Climate entity** (`climate.sauna_controller_climate`):
-  - Shows current goal temperature and ceiling limit
-  - Allows setting goal temperature externally
-  - Displays current bench/ceiling temps
-- **Limit sensor** (`sensor.sauna_controller_limit_temp`):
-  - Read-only; displays ceiling limit temperature
-  - Updates every 5 seconds
+Once connected, Home Assistant can:
 
-**Manual MQTT Commands:**
+- Read current sauna temperature.
+- Change the goal temperature setpoint.
+- Turn heating on and off.
 
-You can also send commands via MQTT client:
+The app also publishes the limit-sensor temperature as a separate sensor entity.
+
+### Discovery and Runtime Topics
+
+Discovery topics:
+
+- `homeassistant/climate/sauna_controller/config`
+- `homeassistant/sensor/sauna_controller_limit/config`
+
+Runtime topics:
+
+- State: `sauna_controller/state`
+- Availability: `sauna_controller/availability`
+
+Command topics:
+
+- `sauna_controller/cmd/mode`
+- `sauna_controller/cmd/setpoint`
+- `sauna_controller/cmd/limit_temp`
+
+### Validate from Home Assistant
+
+1. Open the discovered sauna climate entity in Home Assistant.
+2. Confirm current temperature updates as the sauna temperature changes.
+3. Change target temperature in Home Assistant and verify the Pi UI updates.
+4. Set HVAC mode to `heat` and `off` and verify the sauna follows.
+
+### Manual MQTT Commands
+
 ```bash
 # Enable heater
 mosquitto_pub -h <broker-ip> -t sauna_controller/cmd/mode -m "heat"
@@ -310,33 +355,35 @@ mosquitto_pub -h <broker-ip> -t sauna_controller/cmd/mode -m "heat"
 # Disable heater
 mosquitto_pub -h <broker-ip> -t sauna_controller/cmd/mode -m "off"
 
-# Set goal temp to 85°C
+# Set goal temp to 85 C
 mosquitto_pub -h <broker-ip> -t sauna_controller/cmd/setpoint -m "85"
 
-# Set limit temp to 95°C (dual mode only)
+# Set limit temp to 95 C
 mosquitto_pub -h <broker-ip> -t sauna_controller/cmd/limit_temp -m "95"
 ```
 
-**Troubleshooting MQTT:**
-- Check "Connected" status in UI; if shows "Disconnected", verify broker IP/port/credentials
-- Check systemd logs: `journalctl -u sauna.service | grep -i mqtt`
-- Verify Home Assistant MQTT broker is running
-- Test connectivity from Pi: `mosquitto_pub -h <broker-ip> -t test -m "hello"`
-
 ---
 
-## 6. Kiosk mode on the 7" touchscreen (Chromium)
+## 7. Launch Chromium in Kiosk Mode Automatically
 
-Chromium will auto-launch in full-screen kiosk mode showing the sauna UI on boot.
+Enable desktop auto-login first:
 
-Edit the LXDE autostart file:
+```bash
+sudo raspi-config
+```
+
+Navigate to:
+
+- `System Options` -> `Boot / Auto Login` -> `Desktop Autologin`
+
+Create or edit the LXDE autostart file:
 
 ```bash
 mkdir -p /home/pi/.config/lxsession/LXDE-pi
 nano /home/pi/.config/lxsession/LXDE-pi/autostart
 ```
 
-Add or ensure these lines are present:
+Add:
 
 ```text
 @xset s off
@@ -346,9 +393,11 @@ Add or ensure these lines are present:
 @chromium-browser --kiosk --incognito http://localhost:5000
 ```
 
-- `xset` lines disable screen blanking/power management
-- Chromium launches in full-screen kiosk mode pointing to localhost:5000
-- `--incognito` prevents browser from storing cookies/cache
+This gives you fully automatic startup:
+
+- `sauna.service` starts the backend on boot.
+- Desktop autologin starts the Pi GUI session.
+- LXDE autostart launches Chromium at `http://localhost:5000`.
 
 Reboot to test:
 
@@ -356,13 +405,11 @@ Reboot to test:
 sudo reboot
 ```
 
-After boot, the backend service should be running and Chromium should show the sauna UI automatically. The touchscreen is now interactive for setting temperatures, enabling/disabling the heater, and configuring sensors and MQTT.
-
 ---
 
-## 7. Optional: Desktop shortcut to start the app manually
+## 8. Optional Desktop Shortcut
 
-If you want a one-click desktop icon to start the backend manually (useful for debugging):
+If you want a manual desktop launcher:
 
 ```bash
 mkdir -p /home/pi/Desktop
@@ -388,42 +435,38 @@ Make it executable:
 chmod +x /home/pi/Desktop/SmartSauna.desktop
 ```
 
-Now you can double-click **Smart Sauna Controller** on the Pi desktop to start the app manually.
-
 ---
 
-## 8. Remote Access
+## 9. Remote Access
 
-With the service running and `main.py` binding to `0.0.0.0`, any device on your network can access the UI via:
+When the backend is running, devices on your network can open:
 
 ```text
 http://<pi-ip-address>:5000
 ```
 
-Get your Pi's IP:
+Find the Pi IP:
+
 ```bash
 hostname -I
 ```
 
-You can also access from your phone/laptop on the same WiFi or wired network. For production, consider:
-- Setting a static IP on the Pi (via `/etc/dhcpcd.conf`)
-- Using a DNS name (e.g., `sauna.local` via mDNS / Avahi)
-- Tunneling via VPN or reverse proxy for external access
-
 ---
 
-## 9. Configuration File Reference
+## 10. Configuration File Reference
 
-All settings are saved to `sauna_state.json` in the project directory. You can edit manually (with the service stopped) if needed.
+All settings are saved to `sauna_state.json`.
 
-**Example single-sensor DS18B20 config:**
+Single-sensor DS18B20 example:
+
 ```json
 {
   "desired_temp": 80,
   "current_temp": 45,
   "heater_enabled": false,
   "thermometer_mode": "single",
-  "sensor_type": "ds18b20",
+  "goal_sensor_type": "ds18b20",
+  "limit_sensor_type": "ds18b20",
   "bench_sensor_id": "28-0119a94519ee",
   "ceiling_sensor_id": null,
   "limit_temp": 85,
@@ -438,13 +481,15 @@ All settings are saved to `sauna_state.json` in the project directory. You can e
 }
 ```
 
-**Example dual-sensor DS18B20 config:**
+Dual-sensor DS18B20 example:
+
 ```json
 {
   "desired_temp": 80,
   "current_temp": 75,
   "thermometer_mode": "dual",
-  "sensor_type": "ds18b20",
+  "goal_sensor_type": "ds18b20",
+  "limit_sensor_type": "ds18b20",
   "bench_sensor_id": "28-0119a94519ee",
   "ceiling_sensor_id": "28-01140c63a7ee",
   "limit_temp": 95,
@@ -456,11 +501,13 @@ All settings are saved to `sauna_state.json` in the project directory. You can e
 }
 ```
 
-**Example thermocouple config (dual-sensor):**
+Dual thermocouple example:
+
 ```json
 {
   "thermometer_mode": "dual",
-  "sensor_type": "thermocouple",
+  "goal_sensor_type": "thermocouple",
+  "limit_sensor_type": "thermocouple",
   "goal_spi_cs": 8,
   "limit_spi_cs": 7,
   "limit_temp": 100
@@ -469,123 +516,58 @@ All settings are saved to `sauna_state.json` in the project directory. You can e
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
-### No temperature reading (shows "N/A" on dash)
+### No Temperature Reading
 
-**Check 1-Wire (if using DS18B20):**
+If using DS18B20:
+
 ```bash
 ls -la /sys/bus/w1/devices/ | grep 28-
 ```
-- No 28-* entries? 1-Wire not enabled. See "Prepare 1-Wire" section.
-- Entries present but app shows N/A? Sensor ID mismatch. Check config in UI.
 
-**Check SPI (if using thermocouple):**
+- If no `28-*` devices appear, 1-Wire is not enabled or wiring is wrong.
+- If sensors appear but the UI shows `N/A`, check the configured sensor IDs.
+
+If using MAX31855:
+
 ```bash
 ls /dev/spidev*
 ```
-- Should see `spidev0.0` or similar. If not, enable SPI:
-  ```bash
-  sudo raspi-config
-  # Interface Options → SPI → Yes → Reboot
-  ```
-- Verify wiring: CLK→GPIO11, MOSI→GPIO10, MISO→GPIO9, CS→GPIO8/7, VCC→3.3V, GND→GND
 
-### Heater won't turn on
+- If no SPI devices appear, enable SPI in `raspi-config`.
+- Recheck SCLK, MOSI, MISO, CS, power, and ground wiring.
 
-**Check relay wiring:**
-- Confirm GPIO 17 is wired to relay module input
-- Test manually: `gpio -g mode 17 out; gpio -g write 17 1` (should enable relay)
-- If no relay click, check Pi GPIO with multimeter (should read ~3.3V when on)
+### Heater Will Not Turn On
 
-**Check app logs:**
-```bash
-journalctl -u sauna.service | tail -20
-```
-- Look for errors about GPIO or lockout reasons
+- Verify GPIO 17 is wired to the relay input.
+- Check for a lockout condition in the UI.
+- Review logs with `journalctl -u sauna.service -f`.
 
-**Check lockout:**
-- If "Lockout" appears under heater status, temperature may be at or above 105°C
-- Press "Confirm Continue" if this is a false alarm / test situation
+### MQTT Will Not Connect
 
-### MQTT not connecting
+- Verify broker host, port, username, and password.
+- Test broker reachability from the Pi.
+- Review logs with `journalctl -u sauna.service | grep -i mqtt`.
+- Check that the UI status changes to `Connected`.
 
-**Verify broker is reachable:**
-```bash
-ping <broker-ip>
-```
+### Kiosk Does Not Appear
 
-**Test MQTT on broker:**
-```bash
-mosquitto_pub -h <broker-ip> -p 1883 -t test -m "hello"
-```
+- Verify `sauna.service` is running.
+- Verify Chromium is installed.
+- Confirm desktop autologin is enabled.
+- Confirm the LXDE autostart file contains the Chromium kiosk command.
 
-**If using Home Assistant Mosquitto add-on:**
-- Broker IP is typically `localhost` (from Pi or network IP if on different host)
-- Enable "Anonymous access" in HA MQTT add-on, or create HA user in add-on settings
-- Check HA logs for MQTT connection errors
+### Configuration Does Not Persist
 
-**Check systemd logs:**
-```bash
-journalctl -u sauna.service | grep -i mqtt
-```
+- Verify `/home/pi/sauna_controller/sauna_state.json` is writable by user `pi`.
+- Check free disk space.
 
-### Kiosk mode not showing
+### Dual-Sensor Mode Does Not Engage
 
-**Ensure service is running:**
-```bash
-sudo systemctl status sauna.service
-```
-
-**Check Chromium is installed:**
-```bash
-which chromium-browser
-```
-- If not found, install: `sudo apt-get install chromium-browser`
-
-**Manual test:**
-```bash
-DISPLAY=:0 chromium-browser --kiosk --incognito http://localhost:5000 &
-```
-
-**Kill any existing Chromium instances if stuck:**
-```bash
-pkill -f chromium-browser
-```
-
-### Configuration not persisting after restart
-
-**Ensure service has write permissions:**
-```bash
-ls -la /home/pi/sauna_controller/sauna_state.json
-```
-- Should show `pi` as owner. If not:
-  ```bash
-  sudo chown pi:pi /home/pi/sauna_controller/sauna_state.json
-  ```
-
-**Check disk space:**
-```bash
-df -h /home
-```
-- If nearly full (<5% free), JSON may not save. Free up space.
-
-### Dual-sensor mode not activating (limit sensor ignored)
-
-- Check "Thermometer Setup" widget mode is set to `Dual` (not `Single`)
-- Click "Save Thermometer Setup" to persist
-- Refresh browser page
-- Check both sensor IDs / SPI CS pins are entered correctly
-
-### Temperature reading jumping around / unreliable
-
-**For DS18B20:**
-- Check pull-up resistor (4.7kΩ) is properly wired between GPIO 4 and 3.3V
-- Try shorter/higher-quality wires
-- If reading is way off, sensor may be failing; test with `cat /sys/bus/w1/devices/28-*/w1_slave`
-
-**For thermocouple:**
-- Verify power supply is stable (3.3V should not droop below 3.0V under load)
+- Confirm `Mode` is set to `Dual` in `Edit Thermometer Setup`.
+- Verify both sensor IDs or both thermocouple CS pins are configured.
+- Save and refresh the UI.
 - Check SPI wiring—especially CS pin (should be clean, not floating)
 - If only one thermocouple works in dual mode, check CS pin for that board
 
