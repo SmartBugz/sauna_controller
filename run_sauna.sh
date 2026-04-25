@@ -43,5 +43,5 @@ fi
 # Avoid writing __pycache__ files on the runtime device.
 export PYTHONDONTWRITEBYTECODE=1
 
-# Start the app
-exec python main.py
+# Start the app with Gunicorn production WSGI server
+exec gunicorn --workers 2 --bind 0.0.0.0:5000 --timeout 60 main:app
