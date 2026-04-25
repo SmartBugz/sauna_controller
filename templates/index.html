@@ -342,6 +342,14 @@
                         <p class="widget-note">Enabled: <strong>{{ 'Yes' if state.mqtt_enabled else 'No' }}</strong></p>
                         <button type="button" class="btn btn-primary" data-open-modal="mqtt-modal">Edit Home Assistant Setup</button>
                     </div>
+
+                    <!-- App Version -->
+                    <div class="widget widget-version">
+                        <h2>App Version</h2>
+                        <p class="widget-note">Branch: <strong>{{ state.app_git_branch }}</strong></p>
+                        <p class="widget-note">Commit: <strong>{{ state.app_git_commit }}</strong></p>
+                        <p class="widget-note">Working Tree Clean: <strong>{{ 'No' if state.app_git_dirty else 'Yes' }}</strong></p>
+                    </div>
                 </div>
 
                 <div id="thermometer-modal" class="modal-overlay" aria-hidden="true">

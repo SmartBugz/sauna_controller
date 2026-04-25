@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -582,6 +583,8 @@ class SaunaController:
 
     def __init__(self, config_path: str = CONFIG_PATH):
         self.config_path = config_path
+        self.repo_path = os.path.dirname(os.path.abspath(config_path))
+        self._git_branch, self._git_commit, self._git_dirty = self._read_git_version()
         self._lock = threading.Lock()
         self._state = SaunaState()
         self._load_state_from_disk()
@@ -719,6 +722,9 @@ class SaunaController:
             "mqtt_username": state.get("mqtt_username", ""),
             "mqtt_connected": self._mqtt.connected,
             "session_max_duration_seconds": SESSION_MAX_DURATION_SEC,
+            "app_git_branch": self._git_branch,
+            "app_git_commit": self._git_commit,
+            "app_git_dirty": self._git_dirty,
         }
 
         price = state.get("price_per_kwh")
@@ -945,6 +951,43 @@ class SaunaController:
             self._save_state_to_disk_locked()
 
     # -- Internal -------------------------------------------------------------
+
+    def _read_git_version(self) -> tuple[str, str, bool]:
+        branch = "unknown"
+        commit = "unknown"
+        dirty = False
+
+        try:
+            branch = subprocess.check_output(
+                ["git", "-C", self.repo_path, "symbolic-ref", "--short", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            pass
+
+        try:
+            commit = subprocess.check_output(
+                ["git", "-C", self.repo_path, "rev-parse", "--short", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            pass
+
+        try:
+            dirty = (
+                subprocess.run(
+                    ["git", "-C", self.repo_path, "diff", "--quiet"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                ).returncode
+                != 0
+            )
+        except Exception:
+            pass
+
+        return branch, commit, dirty
 
     def _set_relay(self, on: bool) -> None:
         """Drive relay; caller must hold self._lock."""
