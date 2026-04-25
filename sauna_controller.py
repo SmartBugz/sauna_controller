@@ -720,6 +720,7 @@ class SaunaController:
             "mqtt_broker": state.get("mqtt_broker", ""),
             "mqtt_port": int(state.get("mqtt_port", 1883)),
             "mqtt_username": state.get("mqtt_username", ""),
+            "mqtt_password_configured": bool(state.get("mqtt_password")),
             "mqtt_connected": self._mqtt.connected,
             "session_max_duration_seconds": SESSION_MAX_DURATION_SEC,
             "app_git_branch": self._git_branch,
@@ -907,6 +908,9 @@ class SaunaController:
         password: str,
     ) -> None:
         with self._lock:
+            if not password and self._state.mqtt_password:
+                password = self._state.mqtt_password
+
             changed = (
                 self._state.mqtt_enabled != enabled
                 or self._state.mqtt_broker != broker

@@ -443,7 +443,10 @@
                             <input id="mqtt_username" name="mqtt_username" value="{{ state.mqtt_username or '' }}" />
 
                             <label for="mqtt_password">Password:</label>
-                            <input type="password" id="mqtt_password" name="mqtt_password" />
+                            <input type="password" id="mqtt_password" name="mqtt_password" placeholder="Leave blank to keep saved password" />
+                            <p class="widget-note">
+                                Saved password: <strong>{{ 'Configured' if state.mqtt_password_configured else 'Not set' }}</strong>
+                            </p>
 
                             <div class="modal-actions">
                                 <button type="submit" class="btn btn-primary">Save</button>
