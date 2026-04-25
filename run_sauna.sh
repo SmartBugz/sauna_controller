@@ -6,7 +6,8 @@
 
 set -e
 
-cd /home/pi/sauna_controller
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}"
 
 # Try to pull latest code; if it fails (no network, etc.) continue with existing
 if command -v git >/dev/null 2>&1; then

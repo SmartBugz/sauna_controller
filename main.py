@@ -238,6 +238,5 @@ def timer_reset():
 
 
 if __name__ == "__main__":
-    # NOTE: For development only. In production, use gunicorn/uwsgi.
     # host="0.0.0.0" makes it accessible from other devices on the network.
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)

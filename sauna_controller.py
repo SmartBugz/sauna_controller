@@ -784,12 +784,16 @@ class SaunaController:
             else:
                 desired_c = temp
             self._state.desired_temp = min(float(desired_c), MAX_TEMP_C - 5.0)
+            if self._state.heater_on and self._state.current_temp >= self._state.desired_temp:
+                self._set_relay(False)
             self._state.time_to_setpoint = None
             self._save_state_to_disk_locked()
 
     def set_desired_temperature_c(self, temp_c: float) -> None:
         with self._lock:
             self._state.desired_temp = min(float(temp_c), MAX_TEMP_C - 5.0)
+            if self._state.heater_on and self._state.current_temp >= self._state.desired_temp:
+                self._set_relay(False)
             self._state.time_to_setpoint = None
             self._save_state_to_disk_locked()
 
@@ -1231,11 +1235,11 @@ class SaunaController:
                         if self._state.thermometer_mode == "single":
                             if goal_reading < desired - HYSTERESIS:
                                 self._set_relay(True)
-                            elif goal_reading > desired + HYSTERESIS:
+                            elif goal_reading >= desired:
                                 self._set_relay(False)
                         else:
                             goal_needs_heat = goal_reading < desired - HYSTERESIS
-                            goal_satisfied = goal_reading > desired + HYSTERESIS
+                            goal_satisfied = goal_reading >= desired
                             limit_safe = (
                                 limit_reading is None
                                 or limit_reading < limit_cutoff - HYSTERESIS

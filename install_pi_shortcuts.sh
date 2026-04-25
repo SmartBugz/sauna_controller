@@ -14,6 +14,7 @@ AUTOSTART_DIR="${HOME_DIR}/.config/autostart"
 
 SERVER_SHORTCUT="${DESKTOP_DIR}/Smart Sauna Server.desktop"
 KIOSK_SHORTCUT="${DESKTOP_DIR}/Smart Sauna Kiosk.desktop"
+SERVICE_KIOSK_SHORTCUT="${DESKTOP_DIR}/Smart Sauna Start Kiosk.desktop"
 AUTOSTART_SHORTCUT="${AUTOSTART_DIR}/smart-sauna-kiosk.desktop"
 
 SERVER_EXEC="${PROJECT_DIR}/run_sauna.sh"
@@ -38,6 +39,7 @@ mkdir -p "${DESKTOP_DIR}" "${APPLICATIONS_DIR}" "${AUTOSTART_DIR}"
 
 chmod +x "${PROJECT_DIR}/run_sauna.sh"
 chmod +x "${PROJECT_DIR}/launch_sauna_kiosk.sh"
+chmod +x "${PROJECT_DIR}/launch_sauna_service_kiosk.sh"
 
 cat > "${SERVER_SHORTCUT}" <<EOF
 [Desktop Entry]
@@ -63,10 +65,23 @@ Terminal=false
 Categories=Utility;
 EOF
 
-chmod +x "${SERVER_SHORTCUT}" "${KIOSK_SHORTCUT}"
+cat > "${SERVICE_KIOSK_SHORTCUT}" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Smart Sauna Start Kiosk
+Comment=Restart sauna service and launch kiosk mode
+Exec=${PROJECT_DIR}/launch_sauna_service_kiosk.sh
+Icon=web-browser
+Terminal=false
+Categories=Utility;
+EOF
+
+chmod +x "${SERVER_SHORTCUT}" "${KIOSK_SHORTCUT}" "${SERVICE_KIOSK_SHORTCUT}"
 
 cp "${SERVER_SHORTCUT}" "${APPLICATIONS_DIR}/smart-sauna-server.desktop"
 cp "${KIOSK_SHORTCUT}" "${APPLICATIONS_DIR}/smart-sauna-kiosk.desktop"
+cp "${SERVICE_KIOSK_SHORTCUT}" "${APPLICATIONS_DIR}/smart-sauna-start-kiosk.desktop"
 
 if ${enable_autostart}; then
   cp "${KIOSK_SHORTCUT}" "${AUTOSTART_SHORTCUT}"
@@ -76,6 +91,7 @@ fi
 echo "Installed desktop launchers:"
 echo "- ${SERVER_SHORTCUT}"
 echo "- ${KIOSK_SHORTCUT}"
+echo "- ${SERVICE_KIOSK_SHORTCUT}"
 
 if ${enable_autostart}; then
   echo "Autostart enabled: ${AUTOSTART_SHORTCUT}"
