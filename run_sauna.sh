@@ -12,8 +12,13 @@ cd "${SCRIPT_DIR}"
 STATE_FILE="${SCRIPT_DIR}/sauna_state.json"
 STATE_BACKUP="/tmp/sauna_state.backup.$$"
 
-# Try to pull latest code; if it fails (no network, etc.) continue with existing
+# Try to update code on every start; if it fails, log why and continue.
 if command -v git >/dev/null 2>&1; then
+  BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+  BEFORE_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+  echo "[run_sauna.sh] Update check: branch=${BRANCH} commit=${BEFORE_COMMIT}"
+
   # Preserve local runtime state across pulls, even if older clones still track sauna_state.json.
   if [ -f "${STATE_FILE}" ]; then
     cp "${STATE_FILE}" "${STATE_BACKUP}" || true
@@ -24,7 +29,19 @@ if command -v git >/dev/null 2>&1; then
   find "${SCRIPT_DIR}" -type f -path '*/__pycache__/*.pyc' -delete >/dev/null 2>&1 || true
   git restore --staged --worktree __pycache__ >/dev/null 2>&1 || true
 
-  git pull --ff-only origin main || echo "[run_sauna.sh] git pull failed; running existing code"
+  # Fetch and fast-forward current branch from origin to avoid accidental merges.
+  if git fetch --prune origin && git merge --ff-only "origin/${BRANCH}"; then
+    AFTER_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    if [ "${BEFORE_COMMIT}" != "${AFTER_COMMIT}" ]; then
+      echo "[run_sauna.sh] Updated ${BEFORE_COMMIT} -> ${AFTER_COMMIT}"
+    else
+      echo "[run_sauna.sh] Already up to date (${AFTER_COMMIT})"
+    fi
+  else
+    echo "[run_sauna.sh] Update failed; continuing with existing code."
+    echo "[run_sauna.sh] git status summary:"
+    git status --short --branch || true
+  fi
 
   if [ -f "${STATE_BACKUP}" ]; then
     cp "${STATE_BACKUP}" "${STATE_FILE}" || true
