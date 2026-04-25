@@ -1,5 +1,5 @@
 {
-  "desired_temp": 90.0,
+  "desired_temp": 70.0,
   "limit_temp": 93.3,
   "heater_enabled": false,
   "use_imperial": true,

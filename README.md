@@ -131,6 +131,24 @@ To also auto-open kiosk mode after desktop login:
 ./install_pi_shortcuts.sh --autostart
 ```
 
+### Reliable Update Behavior on Pi
+
+This project is configured so runtime artifacts do not block Git updates on the device:
+
+- `sauna_state.json` is local runtime state and is not tracked by Git.
+- `__pycache__/` and `.pyc` files are ignored.
+- `.sh` scripts are forced to LF line endings for Raspberry Pi compatibility.
+- `run_sauna.sh` preserves `sauna_state.json` across pull attempts and removes stale pycache artifacts before pulling.
+
+For existing Pi clones that predate this change, run this one-time cleanup:
+
+```bash
+cd /home/pi/sauna_controller
+git rm --cached -r __pycache__ sauna_state.json
+cp sauna_state.example.json sauna_state.json 2>/dev/null || true
+git status
+```
+
 ## Configuration
 
 ### Thermometer Setup

@@ -228,6 +228,20 @@ Open the UI:
 - From the Pi: <http://localhost:5000>
 - From another device: `http://<pi-ip>:5000`
 
+### One-Time Git Migration for Older Clones
+
+If your Pi clone is older, do this once so runtime files never block pulls again:
+
+```bash
+cd /home/pi/sauna_controller
+git rm --cached -r __pycache__ sauna_state.json
+cp sauna_state.example.json sauna_state.json 2>/dev/null || true
+git add .gitignore .gitattributes sauna_state.example.json run_sauna.sh
+git commit -m "Ignore runtime artifacts and harden Pi startup pulls"
+```
+
+After this, `sauna_state.json` remains local on-device state and future `git pull --ff-only` runs are much less likely to fail.
+
 ---
 
 ## 4. Start the Backend Automatically on Boot
