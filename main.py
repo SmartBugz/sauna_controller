@@ -4,6 +4,8 @@
 - Shares state with the background SaunaController via a singleton instance
 """
 
+import subprocess
+
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 
 from sauna_controller import SaunaController
@@ -234,6 +236,29 @@ def timer_stop():
 @app.route("/timer/reset", methods=["POST"])
 def timer_reset():
     controller.timer_reset()
+    return redirect(url_for("index"))
+
+
+@app.route("/kiosk/exit", methods=["POST"])
+def kiosk_exit():
+    """Exit Chromium kiosk mode on the Pi.
+
+    We run the kill command with a short delay so this request can return
+    before the browser process exits.
+    """
+    try:
+        subprocess.Popen(
+            [
+                "bash",
+                "-lc",
+                "sleep 1; pkill -f 'chromium.*--kiosk' >/dev/null 2>&1 || pkill -f chromium >/dev/null 2>&1 || true",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
     return redirect(url_for("index"))
 
 

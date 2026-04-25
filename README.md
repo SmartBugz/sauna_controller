@@ -108,7 +108,7 @@ If you want one-command setup for desktop launchers on the Pi home screen:
 
 ```bash
 cd /home/pi/sauna_controller
-chmod +x install_pi_shortcuts.sh launch_sauna_kiosk.sh launch_sauna_service_kiosk.sh run_sauna.sh
+chmod +x install_pi_shortcuts.sh launch_sauna_kiosk.sh launch_sauna_service_kiosk.sh exit_sauna_kiosk.sh run_sauna.sh
 ./install_pi_shortcuts.sh
 ```
 
@@ -117,6 +117,7 @@ This creates:
 - `~/Desktop/Smart Sauna Server.desktop`
 - `~/Desktop/Smart Sauna Kiosk.desktop`
 - `~/Desktop/Smart Sauna Start Kiosk.desktop` (restarts `sauna.service` and opens kiosk)
+- `~/Desktop/Smart Sauna Exit Kiosk.desktop` (closes Chromium kiosk quickly)
 
 For true one-touch service restart from desktop, allow passwordless restart for the service:
 

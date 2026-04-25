@@ -350,6 +350,15 @@
                         <p class="widget-note">Commit: <strong>{{ state.app_git_commit }}</strong></p>
                         <p class="widget-note">Working Tree Clean: <strong>{{ 'No' if state.app_git_dirty else 'Yes' }}</strong></p>
                     </div>
+
+                    <!-- Kiosk Controls -->
+                    <div class="widget widget-kiosk-controls">
+                        <h2>Kiosk Controls</h2>
+                        <p class="widget-note">Use this when you need to close the fullscreen kiosk view.</p>
+                        <form method="post" action="{{ url_for('kiosk_exit') }}" class="inline-form">
+                            <button type="submit" class="btn btn-secondary">Exit Kiosk Mode</button>
+                        </form>
+                    </div>
                 </div>
 
                 <div id="thermometer-modal" class="modal-overlay" aria-hidden="true">

@@ -466,15 +466,16 @@ Use the included installer to create home-screen launchers:
 
 ```bash
 cd /home/pi/sauna_controller
-chmod +x install_pi_shortcuts.sh launch_sauna_kiosk.sh launch_sauna_service_kiosk.sh run_sauna.sh
+chmod +x install_pi_shortcuts.sh launch_sauna_kiosk.sh launch_sauna_service_kiosk.sh exit_sauna_kiosk.sh run_sauna.sh
 ./install_pi_shortcuts.sh
 ```
 
-This creates two desktop shortcuts:
+This creates desktop shortcuts:
 
 - `~/Desktop/Smart Sauna Server.desktop` to start the backend in a terminal.
 - `~/Desktop/Smart Sauna Kiosk.desktop` to launch Chromium in kiosk mode and auto-start backend if needed.
 - `~/Desktop/Smart Sauna Start Kiosk.desktop` to restart `sauna.service` and then open Chromium kiosk mode.
+- `~/Desktop/Smart Sauna Exit Kiosk.desktop` to close Chromium kiosk mode quickly.
 
 For true one-touch restart without password prompts, allow passwordless restart for this service only:
 
