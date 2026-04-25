@@ -184,8 +184,10 @@
                         <p class="warning"><strong>Safety Lockout:</strong>
                             {% if state.lockout_reason == 'max_temp' %}
                                 Absolute max temperature reached.
-                            {% elif state.lockout_reason == 'max_on_time' %}
-                                Maximum runtime reached.
+                            {% elif state.lockout_reason == 'session_timeout' %}
+                                Four-hour session safety limit reached.
+                            {% elif state.lockout_reason == 'sensor_error' %}
+                                Sensor fault detected. Heating shut down for safety.
                             {% else %}
                                 Safety lockout is active.
                             {% endif %}

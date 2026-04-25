@@ -1,0 +1,91 @@
+# Home Assistant automations for Smart Sauna safety notifications.
+#
+# Usage option A (recommended):
+# 1) Copy this file into your HA config directory, for example:
+#    /config/automations/sauna_notifications_automations.yaml
+# 2) In automations.yaml add:
+#    automation: !include automations/sauna_notifications_automations.yaml
+# 3) Restart Home Assistant.
+#
+# Usage option B:
+# Copy the automation blocks directly into your existing automations.yaml.
+#
+# Tip:
+# Replace notify.notify with your preferred notifier such as
+# notify.mobile_app_<your_phone>.
+
+- id: sauna_critical_event_notifications
+  alias: Sauna - Critical Safety Event Notification
+  description: Sends notifications for critical sauna safety events.
+  mode: queued
+  trigger:
+    - platform: mqtt
+      topic: sauna_controller/event
+  condition:
+    - condition: template
+      value_template: >-
+        {{
+          trigger.payload_json is defined
+          and trigger.payload_json.type is defined
+          and trigger.payload_json.type in ['session_timeout', 'max_temp', 'sensor_error']
+        }}
+  action:
+    - variables:
+        event_type: "{{ trigger.payload_json.type | string }}"
+        event_message: "{{ trigger.payload_json.message | default('Sauna safety event detected.') }}"
+    - service: notify.notify
+      data:
+        title: "Sauna Safety Alert"
+        message: "{{ event_type | replace('_', ' ') | upper }}: {{ event_message }}"
+    - service: persistent_notification.create
+      data:
+        title: "Sauna Safety Alert"
+        message: "{{ event_type | replace('_', ' ') | upper }}: {{ event_message }}"
+
+- id: sauna_heatup_slow_notification
+  alias: Sauna - Heating Slow Notification
+  description: Notifies when heat-up is slower than expected.
+  mode: single
+  trigger:
+    - platform: mqtt
+      topic: sauna_controller/event
+  condition:
+    - condition: template
+      value_template: >-
+        {{
+          trigger.payload_json is defined
+          and trigger.payload_json.type is defined
+          and trigger.payload_json.type == 'heatup_slow'
+        }}
+  action:
+    - variables:
+        event_message: "{{ trigger.payload_json.message | default('Sauna is heating slowly.') }}"
+    - service: notify.notify
+      data:
+        title: "Sauna Heating Update"
+        message: "{{ event_message }}"
+
+- id: sauna_session_timeout_followup
+  alias: Sauna - Session Timeout Follow-up
+  description: Ensures the timeout event is clearly visible in HA UI.
+  mode: single
+  trigger:
+    - platform: mqtt
+      topic: sauna_controller/event
+  condition:
+    - condition: template
+      value_template: >-
+        {{
+          trigger.payload_json is defined
+          and trigger.payload_json.type is defined
+          and trigger.payload_json.type == 'session_timeout'
+        }}
+  action:
+    - service: persistent_notification.create
+      data:
+        title: "Sauna Session Auto Shutoff"
+        message: >-
+          {{
+            trigger.payload_json.message
+            | default('Sauna reached the 4-hour safety limit and was turned off.')
+          }}

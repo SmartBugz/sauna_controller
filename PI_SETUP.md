@@ -50,6 +50,7 @@ Dual-mode control logic:
 - Heater turns on when `bench_temp < target - hysteresis` and `ceiling_temp < limit_temp - hysteresis`.
 - Heater turns off when `bench_temp > target + hysteresis` or `ceiling_temp >= limit_temp - hysteresis`.
 - Hard lockout occurs if either sensor reaches 105°C.
+- Heating also shuts down automatically 4 hours after the session is turned on.
 
 Find DS18B20 sensor IDs:
 
@@ -318,8 +319,12 @@ Once connected, Home Assistant can:
 - Read current sauna temperature.
 - Change the goal temperature setpoint.
 - Turn heating on and off.
+- Show whether the heater relay is on.
+- Show whether a safety lockout is active and why.
+- Track session elapsed and remaining time.
+- Trigger automations from sauna event messages.
 
-The app also publishes the limit-sensor temperature as a separate sensor entity.
+The app also publishes limit-sensor temperature, relay state, safety lockout state, lockout reason, session timers, and last-event details as separate MQTT-discovered entities.
 
 ### Discovery and Runtime Topics
 
@@ -327,11 +332,19 @@ Discovery topics:
 
 - `homeassistant/climate/sauna_controller/config`
 - `homeassistant/sensor/sauna_controller_limit/config`
+- `homeassistant/binary_sensor/sauna_controller_heater_relay/config`
+- `homeassistant/binary_sensor/sauna_controller_safety_lockout/config`
+- `homeassistant/sensor/sauna_controller_lockout_reason/config`
+- `homeassistant/sensor/sauna_controller_session_elapsed/config`
+- `homeassistant/sensor/sauna_controller_session_remaining/config`
+- `homeassistant/sensor/sauna_controller_last_event/config`
+- `homeassistant/sensor/sauna_controller_last_event_message/config`
 
 Runtime topics:
 
 - State: `sauna_controller/state`
 - Availability: `sauna_controller/availability`
+- Events: `sauna_controller/event`
 
 Command topics:
 
@@ -345,6 +358,32 @@ Command topics:
 2. Confirm current temperature updates as the sauna temperature changes.
 3. Change target temperature in Home Assistant and verify the Pi UI updates.
 4. Set HVAC mode to `heat` and `off` and verify the sauna follows.
+5. Build automations from `sauna_controller/event` for `session_timeout`, `max_temp`, `heatup_slow`, and `sensor_error` notifications.
+
+`heatup_slow` is emitted when heating has been enabled for 15 minutes and temperature has not increased by at least 5°C from session start.
+
+### Enable Home Assistant Notifications (Recommended)
+
+Use the included automation file from this repo:
+
+- `home_assistant/sauna_notifications_automations.yaml`
+
+Suggested setup:
+
+1. Copy the file into your Home Assistant config, for example: `/config/automations/sauna_notifications_automations.yaml`.
+2. In Home Assistant `automations.yaml`, include it:
+
+```yaml
+automation: !include automations/sauna_notifications_automations.yaml
+```
+
+1. Restart Home Assistant.
+2. Trigger a test event from the sauna app (for example by waiting for `heatup_slow` or forcing a safe shutdown test) and confirm notification delivery.
+
+Notes:
+
+- The file uses `notify.notify` by default.
+- Replace that service with your preferred notifier (for example your mobile app notify service) for push notifications.
 
 ### Manual MQTT Commands
 

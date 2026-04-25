@@ -46,8 +46,9 @@ RELAY_GPIO = 17
 # Control constants
 HYSTERESIS = 2.5
 MAX_TEMP_C = 105.0
-MAX_ON_TIME_SEC = 2 * 60 * 60
-CONFIRMATION_TIMEOUT_SEC = 90
+SESSION_MAX_DURATION_SEC = 4 * 60 * 60
+SLOW_HEATUP_AFTER_SEC = 15 * 60
+SLOW_HEATUP_TEMP_DELTA_C = 5.0
 CONTROL_INTERVAL_SEC = 2.0
 MQTT_PUBLISH_INTERVAL_SEC = 5.0
 
@@ -233,12 +234,18 @@ class SaunaState:
     heater_on: bool = False
     heater_on_since: Optional[float] = None
     time_to_setpoint: Optional[float] = None
+    session_started_at: Optional[float] = None
+    session_start_temp_c: Optional[float] = None
+    slow_heat_alert_sent: bool = False
 
     # Safety
     lockout_active: bool = False
     lockout_reason: Optional[str] = None
     confirmation_required: bool = False
     confirmation_deadline: Optional[float] = None
+    last_event_type: Optional[str] = None
+    last_event_message: Optional[str] = None
+    last_event_ts: Optional[float] = None
 
     # Display
     use_imperial: bool = True
@@ -293,6 +300,7 @@ class MQTTPublisher:
     _ID = "sauna_controller"
     _STATE_TOPIC = f"{_ID}/state"
     _AVAIL_TOPIC = f"{_ID}/availability"
+    _EVENT_TOPIC = f"{_ID}/event"
     _CMD_MODE = f"{_ID}/cmd/mode"
     _CMD_SETPOINT = f"{_ID}/cmd/setpoint"
     _CMD_LIMIT = f"{_ID}/cmd/limit_temp"
@@ -338,6 +346,13 @@ class MQTTPublisher:
             "setpoint_c": snap.get("desired_temp_c"),
             "limit_sensor_temp_c": snap.get("limit_sensor_temp_c"),
             "limit_temp_c": snap.get("limit_temp_c"),
+            "heater_on": bool(snap.get("heater_on")),
+            "lockout_active": bool(snap.get("lockout_active")),
+            "lockout_reason": snap.get("lockout_reason") or "none",
+            "session_elapsed_seconds": snap.get("session_elapsed_seconds") or 0,
+            "session_remaining_seconds": snap.get("session_remaining_seconds") or 0,
+            "last_event_type": snap.get("last_event_type") or "none",
+            "last_event_message": snap.get("last_event_message") or "",
             "mode": "heat" if snap.get("heater_enabled") else "off",
             "action": (
                 "heating"
@@ -351,6 +366,14 @@ class MQTTPublisher:
         try:
             self._client.publish(self._STATE_TOPIC, json.dumps(payload), qos=0, retain=True)
             self._client.publish(self._AVAIL_TOPIC, "online", qos=1, retain=True)
+        except Exception:
+            pass
+
+    def publish_event(self, payload: dict) -> None:
+        if not self._client or not self.connected:
+            return
+        try:
+            self._client.publish(self._EVENT_TOPIC, json.dumps(payload), qos=1, retain=False)
         except Exception:
             pass
 
@@ -424,6 +447,77 @@ class MQTTPublisher:
             "unit_of_measurement": "C",
             "availability_topic": self._AVAIL_TOPIC,
         }
+        heater_relay_cfg = {
+            "name": "Sauna Heater Relay",
+            "unique_id": f"{self._ID}_heater_relay",
+            "device": device,
+            "state_topic": self._STATE_TOPIC,
+            "value_template": "{{ 'ON' if value_json.heater_on else 'OFF' }}",
+            "payload_on": "ON",
+            "payload_off": "OFF",
+            "availability_topic": self._AVAIL_TOPIC,
+        }
+        safety_lockout_cfg = {
+            "name": "Sauna Safety Lockout",
+            "unique_id": f"{self._ID}_safety_lockout",
+            "device": device,
+            "device_class": "problem",
+            "state_topic": self._STATE_TOPIC,
+            "value_template": "{{ 'ON' if value_json.lockout_active else 'OFF' }}",
+            "payload_on": "ON",
+            "payload_off": "OFF",
+            "availability_topic": self._AVAIL_TOPIC,
+        }
+        lockout_reason_cfg = {
+            "name": "Sauna Lockout Reason",
+            "unique_id": f"{self._ID}_lockout_reason",
+            "device": device,
+            "state_topic": self._STATE_TOPIC,
+            "value_template": "{{ value_json.lockout_reason }}",
+            "entity_category": "diagnostic",
+            "icon": "mdi:shield-alert-outline",
+            "availability_topic": self._AVAIL_TOPIC,
+        }
+        session_elapsed_cfg = {
+            "name": "Sauna Session Elapsed",
+            "unique_id": f"{self._ID}_session_elapsed",
+            "device": device,
+            "state_topic": self._STATE_TOPIC,
+            "value_template": "{{ value_json.session_elapsed_seconds }}",
+            "device_class": "duration",
+            "unit_of_measurement": "s",
+            "availability_topic": self._AVAIL_TOPIC,
+        }
+        session_remaining_cfg = {
+            "name": "Sauna Session Remaining",
+            "unique_id": f"{self._ID}_session_remaining",
+            "device": device,
+            "state_topic": self._STATE_TOPIC,
+            "value_template": "{{ value_json.session_remaining_seconds }}",
+            "device_class": "duration",
+            "unit_of_measurement": "s",
+            "availability_topic": self._AVAIL_TOPIC,
+        }
+        last_event_cfg = {
+            "name": "Sauna Last Event",
+            "unique_id": f"{self._ID}_last_event",
+            "device": device,
+            "state_topic": self._STATE_TOPIC,
+            "value_template": "{{ value_json.last_event_type }}",
+            "entity_category": "diagnostic",
+            "icon": "mdi:bell-alert-outline",
+            "availability_topic": self._AVAIL_TOPIC,
+        }
+        last_event_message_cfg = {
+            "name": "Sauna Last Event Message",
+            "unique_id": f"{self._ID}_last_event_message",
+            "device": device,
+            "state_topic": self._STATE_TOPIC,
+            "value_template": "{{ value_json.last_event_message }}",
+            "entity_category": "diagnostic",
+            "icon": "mdi:message-alert-outline",
+            "availability_topic": self._AVAIL_TOPIC,
+        }
 
         client.publish(
             f"homeassistant/climate/{self._ID}/config",
@@ -434,6 +528,48 @@ class MQTTPublisher:
         client.publish(
             f"homeassistant/sensor/{self._ID}_limit/config",
             json.dumps(limit_sensor_cfg),
+            qos=1,
+            retain=True,
+        )
+        client.publish(
+            f"homeassistant/binary_sensor/{self._ID}_heater_relay/config",
+            json.dumps(heater_relay_cfg),
+            qos=1,
+            retain=True,
+        )
+        client.publish(
+            f"homeassistant/binary_sensor/{self._ID}_safety_lockout/config",
+            json.dumps(safety_lockout_cfg),
+            qos=1,
+            retain=True,
+        )
+        client.publish(
+            f"homeassistant/sensor/{self._ID}_lockout_reason/config",
+            json.dumps(lockout_reason_cfg),
+            qos=1,
+            retain=True,
+        )
+        client.publish(
+            f"homeassistant/sensor/{self._ID}_session_elapsed/config",
+            json.dumps(session_elapsed_cfg),
+            qos=1,
+            retain=True,
+        )
+        client.publish(
+            f"homeassistant/sensor/{self._ID}_session_remaining/config",
+            json.dumps(session_remaining_cfg),
+            qos=1,
+            retain=True,
+        )
+        client.publish(
+            f"homeassistant/sensor/{self._ID}_last_event/config",
+            json.dumps(last_event_cfg),
+            qos=1,
+            retain=True,
+        )
+        client.publish(
+            f"homeassistant/sensor/{self._ID}_last_event_message/config",
+            json.dumps(last_event_message_cfg),
             qos=1,
             retain=True,
         )
@@ -506,6 +642,12 @@ class SaunaController:
         if state.get("heater_on") and state.get("heater_on_since"):
             heater_on_duration = now - float(state["heater_on_since"])
 
+        session_elapsed = None
+        session_remaining = None
+        if state.get("session_started_at"):
+            session_elapsed = max(now - float(state["session_started_at"]), 0.0)
+            session_remaining = max(SESSION_MAX_DURATION_SEC - session_elapsed, 0.0)
+
         confirmation_remaining = None
         if state.get("confirmation_required") and state.get("confirmation_deadline"):
             remain = float(state["confirmation_deadline"]) - now
@@ -539,11 +681,23 @@ class SaunaController:
             "status": status,
             "heater_on_for": fmt_duration(heater_on_duration),
             "heater_on_for_seconds": heater_on_duration,
+            "session_elapsed": fmt_duration(session_elapsed),
+            "session_elapsed_seconds": session_elapsed,
+            "session_remaining": fmt_duration(session_remaining),
+            "session_remaining_seconds": session_remaining,
+            "session_start_temp_c": (
+                round(float(state["session_start_temp_c"]), 2)
+                if state.get("session_start_temp_c") is not None
+                else None
+            ),
             "time_to_setpoint": fmt_duration(state.get("time_to_setpoint")),
             "lockout_active": bool(state.get("lockout_active", False)),
             "lockout_reason": state.get("lockout_reason"),
             "confirmation_required": bool(state.get("confirmation_required", False)),
             "confirmation_remaining": confirmation_remaining,
+            "last_event_type": state.get("last_event_type"),
+            "last_event_message": state.get("last_event_message"),
+            "last_event_ts": state.get("last_event_ts"),
             "scheduled_start_at": state.get("scheduled_start_at"),
             "avg_heatup_rate_c_per_sec": state.get("avg_heatup_rate_c_per_sec"),
             "price_per_kwh": state.get("price_per_kwh"),
@@ -564,6 +718,7 @@ class SaunaController:
             "mqtt_port": int(state.get("mqtt_port", 1883)),
             "mqtt_username": state.get("mqtt_username", ""),
             "mqtt_connected": self._mqtt.connected,
+            "session_max_duration_seconds": SESSION_MAX_DURATION_SEC,
         }
 
         price = state.get("price_per_kwh")
@@ -577,26 +732,50 @@ class SaunaController:
         return snapshot
 
     def set_heater_enabled(self, enabled: bool) -> None:
+        event = None
         with self._lock:
+            was_enabled = bool(self._state.heater_enabled)
             self._state.heater_enabled = bool(enabled)
-            if not enabled:
+            if enabled and not was_enabled:
                 self._state.lockout_active = False
                 self._state.lockout_reason = None
                 self._state.confirmation_required = False
                 self._state.confirmation_deadline = None
+                self._state.session_started_at = time.time()
+                self._state.session_start_temp_c = float(self._state.current_temp)
+                self._state.slow_heat_alert_sent = False
+                self._state.time_to_setpoint = None
+                event = self._record_event_locked(
+                    "session_started",
+                    "Sauna session started.",
+                    session_elapsed_seconds=0,
+                    session_start_temp_c=round(float(self._state.current_temp), 2),
+                )
+            elif not enabled:
+                session_elapsed = None
+                if self._state.session_started_at is not None:
+                    session_elapsed = max(time.time() - self._state.session_started_at, 0.0)
+                self._state.lockout_active = False
+                self._state.lockout_reason = None
+                self._state.confirmation_required = False
+                self._state.confirmation_deadline = None
+                self._state.session_started_at = None
+                self._state.session_start_temp_c = None
+                self._state.slow_heat_alert_sent = False
                 self._set_relay(False)
+                if was_enabled:
+                    event = self._record_event_locked(
+                        "session_stopped",
+                        "Sauna session stopped.",
+                        session_elapsed_seconds=round(session_elapsed or 0.0, 1),
+                    )
             self._save_state_to_disk_locked()
 
+        if event is not None:
+            self._mqtt.publish_event(event)
+
     def confirm_continue(self) -> None:
-        with self._lock:
-            self._state.confirmation_required = False
-            self._state.confirmation_deadline = None
-            self._state.lockout_active = False
-            self._state.lockout_reason = None
-            self._state.heater_enabled = True
-            if self._state.heater_on:
-                self._state.heater_on_since = time.time()
-            self._save_state_to_disk_locked()
+        self.set_heater_enabled(True)
 
     def set_desired_temperature(self, temp: float) -> None:
         with self._lock:
@@ -773,6 +952,18 @@ class SaunaController:
         else:
             self._state.heater_on_since = None
 
+    def _record_event_locked(self, event_type: str, message: str, **extra) -> dict:
+        event = {
+            "type": event_type,
+            "message": message,
+            "timestamp": time.time(),
+        }
+        event.update(extra)
+        self._state.last_event_type = event_type
+        self._state.last_event_message = message
+        self._state.last_event_ts = event["timestamp"]
+        return event
+
     def _load_state_from_disk(self) -> None:
         if not os.path.isfile(self.config_path):
             return
@@ -814,6 +1005,12 @@ class SaunaController:
             state.lockout_reason = None
             state.confirmation_required = False
             state.confirmation_deadline = None
+            state.session_started_at = None
+            state.session_start_temp_c = None
+            state.slow_heat_alert_sent = False
+            state.last_event_type = None
+            state.last_event_message = None
+            state.last_event_ts = None
 
     def _save_state_to_disk_locked(self) -> None:
         data = {
@@ -853,6 +1050,7 @@ class SaunaController:
         last_mqtt_publish = 0.0
 
         while not self._stop_event.is_set():
+            events_to_publish = []
             now = time.time()
 
             with self._lock:
@@ -867,8 +1065,10 @@ class SaunaController:
 
             goal_reading: Optional[float]
             limit_reading: Optional[float]
+            sensor_fault_message = None
+            mock_environment = isinstance(GPIO, MockGPIO)
 
-            if goal_sensor_type == "ds18b20" and not W1_DEVICES:
+            if goal_sensor_type == "ds18b20" and not W1_DEVICES and mock_environment:
                 goal_reading, limit_reading = _mock_temps(heater_on)
             else:
                 goal_reading = _read_sensor(
@@ -886,32 +1086,74 @@ class SaunaController:
                         use_first_w1_fallback=False,
                     )
 
+                missing_sensors = []
                 if goal_reading is None:
+                    missing_sensors.append("goal")
+                if thermometer_mode == "dual" and limit_reading is None:
+                    missing_sensors.append("limit")
+
+                if missing_sensors and mock_environment:
                     mock_goal, mock_limit = _mock_temps(heater_on)
-                    goal_reading = mock_goal
+                    if goal_reading is None:
+                        goal_reading = mock_goal
                     if thermometer_mode == "dual" and limit_reading is None:
                         limit_reading = mock_limit
+                elif missing_sensors:
+                    sensor_fault_message = (
+                        "Sensor read failed for "
+                        + ", ".join(missing_sensors)
+                        + " sensor. Session shut down for safety."
+                    )
 
             with self._lock:
-                self._state.current_temp = goal_reading
-                self._state.limit_sensor_temp = (
-                    limit_reading if self._state.thermometer_mode == "dual" else None
-                )
+                if goal_reading is not None:
+                    self._state.current_temp = goal_reading
+                self._state.limit_sensor_temp = limit_reading if self._state.thermometer_mode == "dual" else None
                 self._state.last_updated = now
 
                 desired = self._state.desired_temp
                 limit_cutoff = self._state.limit_temp
                 enabled = self._state.heater_enabled
+                session_started_at = self._state.session_started_at
+                session_start_temp_c = self._state.session_start_temp_c
+
+                if sensor_fault_message is not None:
+                    if self._state.lockout_reason != "sensor_error":
+                        events_to_publish.append(
+                            self._record_event_locked("sensor_error", sensor_fault_message)
+                        )
+                    self._set_relay(False)
+                    self._state.heater_enabled = False
+                    self._state.lockout_active = True
+                    self._state.lockout_reason = "sensor_error"
+                    self._state.confirmation_required = False
+                    self._state.confirmation_deadline = None
+                    self._state.session_started_at = None
+                    self._state.slow_heat_alert_sent = False
 
                 # Hard lockout if either sensor exceeds absolute max.
-                if goal_reading >= MAX_TEMP_C or (
+                elif goal_reading >= MAX_TEMP_C or (
                     self._state.thermometer_mode == "dual"
                     and limit_reading is not None
                     and limit_reading >= MAX_TEMP_C
                 ):
+                    if self._state.lockout_reason != "max_temp":
+                        events_to_publish.append(
+                            self._record_event_locked(
+                                "max_temp",
+                                "Absolute max temperature reached. Session shut down.",
+                                current_temp_c=goal_reading,
+                                limit_sensor_temp_c=limit_reading,
+                            )
+                        )
                     self._set_relay(False)
+                    self._state.heater_enabled = False
                     self._state.lockout_active = True
                     self._state.lockout_reason = "max_temp"
+                    self._state.confirmation_required = False
+                    self._state.confirmation_deadline = None
+                    self._state.session_started_at = None
+                    self._state.slow_heat_alert_sent = False
                 else:
                     # Schedule logic
                     if (
@@ -927,29 +1169,63 @@ class SaunaController:
                             self._state.heater_enabled = True
                             enabled = True
                             self._state.scheduled_start_at = None
+                            if self._state.session_started_at is None:
+                                self._state.session_started_at = now
+                                self._state.session_start_temp_c = float(goal_reading)
+                                self._state.slow_heat_alert_sent = False
+                                session_started_at = now
+                                session_start_temp_c = float(goal_reading)
+                                events_to_publish.append(
+                                    self._record_event_locked(
+                                        "session_started",
+                                        "Scheduled sauna session started.",
+                                        session_elapsed_seconds=0,
+                                        session_start_temp_c=round(float(goal_reading), 2),
+                                    )
+                                )
 
-                    # Max-on-time confirmation flow
-                    if self._state.heater_on_since is not None:
-                        on_duration = now - self._state.heater_on_since
-                        if (
-                            on_duration >= MAX_ON_TIME_SEC
-                            and not self._state.confirmation_required
-                            and not self._state.lockout_active
+                    if enabled and session_started_at is not None:
+                        session_elapsed = now - session_started_at
+                        if session_elapsed >= SESSION_MAX_DURATION_SEC:
+                            if self._state.lockout_reason != "session_timeout":
+                                events_to_publish.append(
+                                    self._record_event_locked(
+                                        "session_timeout",
+                                        "Sauna session reached the 4-hour safety limit and shut down.",
+                                        session_elapsed_seconds=round(session_elapsed, 1),
+                                    )
+                                )
+                            self._set_relay(False)
+                            self._state.heater_enabled = False
+                            self._state.lockout_active = True
+                            self._state.lockout_reason = "session_timeout"
+                            self._state.confirmation_required = False
+                            self._state.confirmation_deadline = None
+                            self._state.session_started_at = None
+                            self._state.session_start_temp_c = None
+                            self._state.slow_heat_alert_sent = False
+                            enabled = False
+                        elif (
+                            not self._state.slow_heat_alert_sent
+                            and session_elapsed >= SLOW_HEATUP_AFTER_SEC
+                            and session_start_temp_c is not None
+                            and goal_reading <= (session_start_temp_c + SLOW_HEATUP_TEMP_DELTA_C)
                         ):
-                            self._state.confirmation_required = True
-                            self._state.confirmation_deadline = now + CONFIRMATION_TIMEOUT_SEC
-
-                    if (
-                        self._state.confirmation_required
-                        and self._state.confirmation_deadline is not None
-                        and now >= self._state.confirmation_deadline
-                    ):
-                        self._set_relay(False)
-                        self._state.heater_enabled = False
-                        self._state.confirmation_required = False
-                        self._state.confirmation_deadline = None
-                        self._state.lockout_active = True
-                        self._state.lockout_reason = "max_on_time"
+                            self._state.slow_heat_alert_sent = True
+                            events_to_publish.append(
+                                self._record_event_locked(
+                                    "heatup_slow",
+                                    "Sauna heater is on but temperature has not risen enough in 15 minutes.",
+                                    current_temp_c=goal_reading,
+                                    setpoint_c=desired,
+                                    session_start_temp_c=round(session_start_temp_c, 2),
+                                    required_min_temp_c=round(
+                                        session_start_temp_c + SLOW_HEATUP_TEMP_DELTA_C,
+                                        2,
+                                    ),
+                                    session_elapsed_seconds=round(session_elapsed, 1),
+                                )
+                            )
 
                     if not self._state.lockout_active and enabled:
                         if self._state.thermometer_mode == "single":
@@ -992,6 +1268,9 @@ class SaunaController:
 
                 if self._state.timer_running and self._state.timer_start_ts is not None:
                     self._state.timer_elapsed += CONTROL_INTERVAL_SEC
+
+            for event in events_to_publish:
+                self._mqtt.publish_event(event)
 
             if now - last_mqtt_publish >= MQTT_PUBLISH_INTERVAL_SEC:
                 self._mqtt.publish_state(self.get_state_snapshot())

@@ -7,7 +7,7 @@ Python/Flask-based smart sauna controller for Raspberry Pi 4 with a web UI, dual
 ### Core Control
 
 - Bang-bang thermostat with configurable ±2.5°C hysteresis.
-- 2-hour max runtime with confirmation window as a safety cutoff.
+- 4-hour maximum session runtime starting from the user turning heating on.
 - Hard overtemperature lockout at 105°C to prevent runaway heating.
 - Active-HIGH relay control on GPIO 17.
 
@@ -26,6 +26,8 @@ Python/Flask-based smart sauna controller for Raspberry Pi 4 with a web UI, dual
 - Home Assistant MQTT auto-discovery.
 - Configurable MQTT broker hostname, port, and credentials.
 - Runtime publishing of temperature and heater state.
+- MQTT-discovered safety and session entities for Home Assistant dashboards and automations.
+- MQTT event topic for Home Assistant notifications and safety automations.
 - Home Assistant can:
   - Read current sauna temperature.
   - Change the goal temperature setpoint.
@@ -174,8 +176,12 @@ Once connected, Home Assistant can:
 - Read current sauna temperature.
 - Change the goal temperature setpoint.
 - Turn heating mode on or off.
+- Show whether the heater relay is energized.
+- Show whether a safety lockout is active and why.
+- Track session elapsed and remaining safety runtime.
+- Trigger automations from sauna safety events.
 
-The controller also exposes limit-sensor telemetry as a separate MQTT-discovered sensor.
+The controller also exposes limit-sensor telemetry, relay state, safety lockout state, lockout reason, session timers, and last-event status as MQTT-discovered entities.
 
 ### MQTT Topics
 
@@ -183,11 +189,19 @@ Discovery topics:
 
 - `homeassistant/climate/sauna_controller/config`
 - `homeassistant/sensor/sauna_controller_limit/config`
+- `homeassistant/binary_sensor/sauna_controller_heater_relay/config`
+- `homeassistant/binary_sensor/sauna_controller_safety_lockout/config`
+- `homeassistant/sensor/sauna_controller_lockout_reason/config`
+- `homeassistant/sensor/sauna_controller_session_elapsed/config`
+- `homeassistant/sensor/sauna_controller_session_remaining/config`
+- `homeassistant/sensor/sauna_controller_last_event/config`
+- `homeassistant/sensor/sauna_controller_last_event_message/config`
 
 Runtime topics:
 
 - State: `sauna_controller/state`
 - Availability: `sauna_controller/availability`
+- Events: `sauna_controller/event`
 
 Command topics:
 
@@ -204,6 +218,39 @@ Published state payload includes:
 - `limit_sensor_temp_c`
 - `limit_temp_c`
 - `thermometer_mode`
+- `heater_on`
+- `lockout_active`
+- `lockout_reason`
+- `session_elapsed_seconds`
+- `session_remaining_seconds`
+- `last_event_type`
+- `last_event_message`
+
+Event payloads on `sauna_controller/event` include:
+
+- `session_started`
+- `session_stopped`
+- `session_timeout`
+- `max_temp`
+- `heatup_slow`
+- `sensor_error`
+
+`heatup_slow` triggers when heating has been enabled for 15 minutes and temperature has not increased by at least 5°C from session start.
+
+### Home Assistant Notification Automations
+
+This repo includes ready-to-use Home Assistant automation YAML for sauna event notifications:
+
+- `home_assistant/sauna_notifications_automations.yaml`
+
+The file listens to `sauna_controller/event` and triggers notifications for:
+
+- `session_timeout`
+- `max_temp`
+- `sensor_error`
+- `heatup_slow`
+
+By default, it uses `notify.notify` plus persistent notifications. In Home Assistant, replace `notify.notify` with your preferred notifier (for example a mobile app notification service) if desired.
 
 ## Notes
 
