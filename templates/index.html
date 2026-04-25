@@ -358,6 +358,12 @@
                         <form method="post" action="{{ url_for('kiosk_exit') }}" class="inline-form">
                             <button type="submit" class="btn btn-secondary">Exit Kiosk Mode</button>
                         </form>
+
+                        <p class="widget-note" style="margin-top: 1rem;">Autostart on Login: <strong>{{ 'Enabled' if state.kiosk_autostart_enabled else 'Disabled' }}</strong></p>
+                        <form method="post" action="{{ url_for('kiosk_autostart') }}" class="inline-form">
+                            <input type="hidden" name="enabled" value="{{ 'false' if state.kiosk_autostart_enabled else 'true' }}" />
+                            <button type="submit" class="btn btn-primary">{{ 'Disable' if state.kiosk_autostart_enabled else 'Enable' }} Autostart</button>
+                        </form>
                     </div>
                 </div>
 

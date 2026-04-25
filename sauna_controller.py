@@ -725,6 +725,7 @@ class SaunaController:
             "app_git_branch": self._git_branch,
             "app_git_commit": self._git_commit,
             "app_git_dirty": self._git_dirty,
+            "kiosk_autostart_enabled": self.kiosk_autostart_enabled(),
         }
 
         price = state.get("price_per_kwh")
@@ -736,6 +737,41 @@ class SaunaController:
             )
 
         return snapshot
+
+    def _kiosk_autostart_path(self) -> str:
+        return os.path.join(os.path.expanduser("~"), ".config", "autostart", "smart-sauna-kiosk.desktop")
+
+    def kiosk_autostart_enabled(self) -> bool:
+        return os.path.isfile(self._kiosk_autostart_path())
+
+    def set_kiosk_autostart(self, enabled: bool) -> None:
+        autostart_path = self._kiosk_autostart_path()
+        autostart_dir = os.path.dirname(autostart_path)
+
+        if enabled:
+            os.makedirs(autostart_dir, exist_ok=True)
+            content = (
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Version=1.0\n"
+                "Name=Smart Sauna Kiosk\n"
+                "Comment=Launch Smart Sauna in kiosk mode on login\n"
+                f"Exec={self.repo_path}/launch_sauna_kiosk.sh\n"
+                "Icon=web-browser\n"
+                "Terminal=false\n"
+                "Categories=Utility;\n"
+            )
+            with open(autostart_path, "w", encoding="utf-8", newline="\n") as file:
+                file.write(content)
+            try:
+                os.chmod(autostart_path, 0o755)
+            except Exception:
+                pass
+        else:
+            try:
+                os.remove(autostart_path)
+            except FileNotFoundError:
+                pass
 
     def set_heater_enabled(self, enabled: bool) -> None:
         event = None

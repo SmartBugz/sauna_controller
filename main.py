@@ -262,6 +262,17 @@ def kiosk_exit():
     return redirect(url_for("index"))
 
 
+@app.route("/kiosk/autostart", methods=["POST"])
+def kiosk_autostart():
+    """Enable or disable kiosk autostart on desktop login."""
+    enabled = request.form.get("enabled") == "true"
+    try:
+        controller.set_kiosk_autostart(enabled)
+    except Exception:
+        pass
+    return redirect(url_for("index"))
+
+
 if __name__ == "__main__":
     # host="0.0.0.0" makes it accessible from other devices on the network.
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
