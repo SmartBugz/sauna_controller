@@ -46,6 +46,8 @@ main() {
   exec "${BROWSER}" \
     --kiosk \
     --incognito \
+    --no-first-run \
+    --password-store=basic \
     --noerrdialogs \
     --disable-infobars \
     --check-for-update-interval=31536000 \
