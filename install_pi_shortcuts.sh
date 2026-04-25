@@ -8,9 +8,26 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOME_DIR="${HOME}"
-DESKTOP_DIR="${HOME_DIR}/Desktop"
+DESKTOP_DIR=""
 APPLICATIONS_DIR="${HOME_DIR}/.local/share/applications"
 AUTOSTART_DIR="${HOME_DIR}/.config/autostart"
+
+if command -v xdg-user-dir >/dev/null 2>&1; then
+  CANDIDATE_DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+  if [[ -n "${CANDIDATE_DESKTOP_DIR}" ]]; then
+    DESKTOP_DIR="${CANDIDATE_DESKTOP_DIR}"
+  fi
+fi
+
+if [[ -z "${DESKTOP_DIR}" ]]; then
+  if [[ -d "${HOME_DIR}/Desktop" ]]; then
+    DESKTOP_DIR="${HOME_DIR}/Desktop"
+  elif [[ -d "${HOME_DIR}/desktop" ]]; then
+    DESKTOP_DIR="${HOME_DIR}/desktop"
+  else
+    DESKTOP_DIR="${HOME_DIR}/Desktop"
+  fi
+fi
 
 SERVER_SHORTCUT="${DESKTOP_DIR}/Smart Sauna Server.desktop"
 KIOSK_SHORTCUT="${DESKTOP_DIR}/Smart Sauna Kiosk.desktop"
