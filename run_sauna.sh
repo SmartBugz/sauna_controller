@@ -60,5 +60,10 @@ fi
 # Avoid writing __pycache__ files on the runtime device.
 export PYTHONDONTWRITEBYTECODE=1
 
+# Ensure dependencies match the checked-out code on every restart.
+if ! python -m pip install --disable-pip-version-check -r requirements.txt; then
+  echo "[run_sauna.sh] Dependency install failed; continuing with existing environment."
+fi
+
 # Run a single worker so only one SaunaController loop owns GPIO/relay state.
 exec gunicorn --workers 1 --worker-class gthread --threads 4 --bind 0.0.0.0:5000 --timeout 60 main:app
